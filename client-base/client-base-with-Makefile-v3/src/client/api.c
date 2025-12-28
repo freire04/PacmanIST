@@ -147,14 +147,31 @@ int pacman_connect(char const *req_pipe_path,
 }
 
 void pacman_play(char command) {
+	if(session.req_pipe < 0) return;
 
-  // TODO - implement me
-
+	char op = OP_CODE_PLAY;
+	
+	if(write_full(session.req_pipe, &op, 1) < 0){
+		perror("pacman_play: write op");
+		return;
+	}
+	
+	if(write_full(session.req_pipe, &command, 1) < 0){
+		perror("pacman_play: write command");
+		return;
+	}
 }
 
 int pacman_disconnect() {
-  // TODO - implement me
-  return 0;
+  	if(session.req_pipe >= 0){
+		char op = OP_CODE_DISCONNECT;
+
+		if(write_full(session.req_pipe, &op, 1) < 0){
+			perror("pacman_disconnect: write disconnect");
+		}
+	}
+	session_reset();
+	return 0;
 }
 
 Board receive_board_update(void) {
