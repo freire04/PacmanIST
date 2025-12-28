@@ -175,5 +175,76 @@ int pacman_disconnect() {
 }
 
 Board receive_board_update(void) {
-    // TODO - implement me
+	Board board = {0};
+	
+	if(session.notif_pipe < 0){
+		debug("receive_board_update: notif pipe not open\n");
+		return board;
+	}
+	
+	// Ler OP_CODE
+	char op_code = 0;
+	if(read_full(session.notif_pipe, &op_code, 1) <= 0){
+		debug("receive_board_update: failed to read op_code\n");
+		return board;
+	}
+	
+	if(op_code != OP_CODE_BOARD){
+		debug("receive_board_update: incorrect op_code %d\n", op_code);
+		return board;
+	}
+	
+	// Ler width
+	if(read_full(session.notif_pipe, &board.width, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read width\n");
+		return board;
+	}
+	
+	// Ler height
+	if(read_full(session.notif_pipe, &board.height, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read height\n");
+		return board;
+	}
+	
+	// Ler tempo
+	if(read_full(session.notif_pipe, &board.tempo, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read tempo\n");
+		return board;
+	}
+	
+	// Ler victory
+	if(read_full(session.notif_pipe, &board.victory, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read victory\n");
+		return board;
+	}
+	
+	// Ler game_over
+	if(read_full(session.notif_pipe, &board.game_over, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read game_over\n");
+		return board;
+	}
+	
+	// Ler accumulated_points
+	if(read_full(session.notif_pipe, &board.accumulated_points, sizeof(int)) <= 0){
+		debug("receive_board_update: failed to read accumulated_points\n");
+		return board;
+	}
+	
+	// Alocar memória para os dados do tabuleiro
+	int board_size = board.width * board.height;
+	board.data = malloc(board_size);
+	if(!board.data){
+		perror("receive_board_update: malloc failed");
+		return board;
+	}
+	
+	// Ler board_data
+	if(read_full(session.notif_pipe, board.data, board_size) <= 0){
+		debug("receive_board_update: failed to read board_data\n");
+		free(board.data);
+		board.data = NULL;
+		return board;
+	}
+	
+	return board;
 }
