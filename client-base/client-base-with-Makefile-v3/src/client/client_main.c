@@ -2,7 +2,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "debug.h"
-
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,7 +10,6 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include <pthread.h>
 
 Board board;
 bool stop_execution = false;
@@ -75,6 +74,16 @@ int main(int argc, char *argv[]) {
 
     open_debug_file("client-debug.log");
 
+    if (mkfifo(req_pipe_path, 0666)< 0) {
+        perror("Failed to create request pipe");
+        return 1;
+    }
+    if (mkfifo(notif_pipe_path, 0666) < 0) {
+        perror("Failed to create notification pipe");
+        unlink(req_pipe_path);
+        return 1;
+    }
+
     if (pacman_connect(req_pipe_path, notif_pipe_path, register_pipe) != 0) {
         perror("Failed to connect to server");
         return 1;
@@ -94,9 +103,9 @@ int main(int argc, char *argv[]) {
     while (1) {
 
         pthread_mutex_lock(&mutex);
-        if (stop_execution)
+        if (stop_execution){
             pthread_mutex_unlock(&mutex);
-            break;
+            break;}
         pthread_mutex_unlock(&mutex);
 
         if (cmd_fp) {

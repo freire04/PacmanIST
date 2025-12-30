@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include "protocol.h"
+#include <sys/stat.h>
 
 #define CONTINUE_PLAY 0
 #define NEXT_LEVEL 1
@@ -150,11 +154,87 @@ void* ghost_thread(void *arg) {
     }
 }
 
+static int read_full(int fd, void *buff, size_t n){
+    size_t off = 0;
+    while(off < n){
+        ssize_t r = read(fd, (char*) buff + off, n - off);
+        if (r == 0) return 0; // EOF
+        if (r < 0){
+            perror("read_full: read");
+            return -1;
+        }
+        off += (size_t)r;
+    }
+    return 1;
+}
+
+void* host_thread(void* arg) {
+    char* fifo_registo = (char*) arg;
+    
+    int reg_fd = open(fifo_registo, O_RDONLY);
+    if (reg_fd < 0) {
+        perror("host_thread: open registro fifo");
+        return NULL;
+    }
+    
+    while (1) {
+      
+        char op_code = 0;
+        ssize_t r = read(reg_fd, &op_code, 1);
+        
+        if (r == 0) {
+            // EOF - reabrir FIFO para aceitar novos clientes
+            close(reg_fd);
+            reg_fd = open(fifo_registo, O_RDONLY);
+            continue;
+        }
+        
+        if (r < 0) {
+            perror("host_thread: read op_code");
+            break;
+        }
+        
+        if (op_code != OP_CODE_CONNECT) {
+            continue;
+        }
+        
+       
+        char req_pipe[MAX_PIPE_PATH_LENGTH];
+        char notif_pipe[MAX_PIPE_PATH_LENGTH];
+        
+        if (read_full(reg_fd, req_pipe, MAX_PIPE_PATH_LENGTH) <= 0) {
+            perror("host_thread: read req_pipe");
+            continue;
+        }
+        
+        if (read_full(reg_fd, notif_pipe, MAX_PIPE_PATH_LENGTH) <= 0) {
+            perror("host_thread: read notif_pipe");
+            continue;
+        }
+        
+        
+        // handle_client(req_pipe, notif_pipe, &game_board); , tarefa que se vai usar para processar o pedido e depois enviar resposta
+    }
+    
+    close(reg_fd);
+    return NULL;
+}
+
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        printf("Usage: %s <level_directory>\n", argv[0]);
+    if (argc != 4) {
+        printf("Usage: %s <level_directory> <max_games> <fifo_registo>\n", argv[0]);
         return -1;
     }
+
+    int max_games = atoi(argv[2]);
+    char *fifo_registo = argv[3];
+
+    if (mkfifo(fifo_registo, 0666) == -1) {
+        perror("Erro ao criar o FIFO");
+        return -1;
+    }
+    printf("Servidor: FIFO de registo '%s' criado com sucesso.\n", fifo_registo);
+
 
     // Random seed for any random movements
     srand((unsigned int)time(NULL));

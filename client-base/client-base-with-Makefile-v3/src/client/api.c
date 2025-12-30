@@ -205,7 +205,7 @@ Board receive_board_update(void) {
 		debug("receive_board_update: failed to read height\n");
 		return board;
 	}
-	
+
 	// Ler tempo
 	if(read_full(session.notif_pipe, &board.tempo, sizeof(int)) <= 0){
 		debug("receive_board_update: failed to read tempo\n");
