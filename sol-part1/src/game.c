@@ -220,6 +220,50 @@ void* host_thread(void* arg) {
     return NULL;
 }
 
+void* handle_client(char* req_pipe_path, char* notif_pipe_path, board_t* game_board) {
+    if(open(req_pipe_path, O_RDONLY) < 0) {
+        perror("handle_client: open req fifo (write)");
+        return NULL;
+    }
+
+    if(open(notif_pipe_path, O_WRONLY) < 0) {
+        perror("handle_client: open notif fifo (read)");
+        return NULL;
+    }
+
+    char response[2] = {OP_CODE_CONNECT, 0};
+    write_full(notif_pipe_path, response, 2);
+
+    while(1){
+        char op_code = 0;
+        ssize_t r = read_full(req_pipe_path, &op_code, 1);
+        if (r<=0){
+            break;
+        }
+
+        if(op_code == OP_CODE_DISCONNECT){
+            break;
+        }
+        else if(op_code == OP_CODE_PLAY){
+            char command;
+            if(read_full(req_pipe_path, &command,1) > 0){
+                debug("handle_client: read command");
+                command_t play;
+                play.command = command;
+                play.turns = 1;
+                move_pacman(game_board, 0, &play);
+            }
+            
+        }
+        else if(op_code == OP_CODE_BOARD){
+            // enviar board
+        }
+    }
+    
+
+    
+}
+
 int main(int argc, char** argv) {
     if (argc != 4) {
         printf("Usage: %s <level_directory> <max_games> <fifo_registo>\n", argv[0]);
