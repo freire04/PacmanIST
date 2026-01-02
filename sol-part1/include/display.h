@@ -38,6 +38,8 @@ void refresh_screen();
 /*Ncurses will be reading the player's inputs*/
 char get_input();
 
+char* get_board_displayed(board_t* board);
+
 void terminal_cleanup();
 
 #endif

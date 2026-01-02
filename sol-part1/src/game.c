@@ -24,6 +24,20 @@ typedef struct {
     int ghost_index;
 } ghost_thread_arg_t;
 
+typedef struct {
+    board_t *board;
+    int notif_fd;
+    volatile int *running;
+    volatile int *victory;
+} sender_args_t;
+
+typedef struct {
+    const char *fifo_registo;
+    board_t *board;
+} host_args_t;
+
+static void handle_client(const char* req_pipe_path, const char* notif_pipe_path, board_t* game_board);
+
 int thread_shutdown = 0;
 
 int create_backup() {
@@ -50,6 +64,67 @@ void screen_refresh(board_t * game_board, int mode) {
     draw_board(game_board, mode);
     refresh_screen();     
 }
+
+static int write_full(int fd, const void *buf, size_t n){
+    size_t off = 0;
+    while(off < n){
+        ssize_t w = write(fd, (const char*)buf + off, n - off);
+        if(w <= 0) return -1;
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+static void *sender_thread(void *arg){
+    sender_args_t *a = arg;
+
+    while(*a->running){
+        sleep_ms(a->board->tempo);
+
+        int width, height, tempo, victory, game_over, points;
+
+        pthread_rwlock_rdlock(&a->board->state_lock);
+        width  = a->board->width;
+        height = a->board->height;
+        tempo  = a->board->tempo;
+        points = a->board->pacmans[0].points;
+        game_over = (a->board->pacmans[0].alive == 0);
+        victory   = (*a->victory);
+        char *grid = get_board_displayed(a->board); // malloc'ed string
+        pthread_rwlock_unlock(&a->board->state_lock);
+
+        if(!grid) {
+            *a->running = 0;
+            break;
+        }
+
+        char op = OP_CODE_BOARD;
+        size_t cells = (size_t) width * (size_t) height;
+
+        if (write_full(a->notif_fd, &op, 1) < 0 ||
+            write_full(a->notif_fd, &width, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &height, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &tempo, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &victory, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &game_over, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &points, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, grid, cells) < 0) {
+            free(grid);
+            *a->running = 0;
+            break;
+        }
+
+        free(grid);
+
+        if(game_over || victory){
+            *a->running = 0;
+            break;
+        }
+    }
+
+    return NULL;
+}
+
 
 void* ncurses_thread(void *arg) {
     board_t *board = (board_t*) arg;
@@ -169,9 +244,11 @@ static int read_full(int fd, void *buff, size_t n){
 }
 
 void* host_thread(void* arg) {
-    char* fifo_registo = (char*) arg;
+    host_args_t *a = arg;
+    const char *fifo_registo = a->fifo_registo;
+    board_t *game_board = a->board;
     
-    int reg_fd = open(fifo_registo, O_RDONLY);
+    int reg_fd = open(fifo_registo, O_RDWR);
     if (reg_fd < 0) {
         perror("host_thread: open registro fifo");
         return NULL;
@@ -213,55 +290,76 @@ void* host_thread(void* arg) {
         }
         
         
-        // handle_client(req_pipe, notif_pipe, &game_board); , tarefa que se vai usar para processar o pedido e depois enviar resposta
+        handle_client(req_pipe, notif_pipe, game_board); 
     }
     
     close(reg_fd);
     return NULL;
 }
 
-void* handle_client(char* req_pipe_path, char* notif_pipe_path, board_t* game_board) {
-    if(open(req_pipe_path, O_RDONLY) < 0) {
+void handle_client(const char* req_pipe_path, const char* notif_pipe_path, board_t* game_board) {
+    int req_fd = open(req_pipe_path, O_RDONLY);
+    if(req_fd < 0) {
         perror("handle_client: open req fifo (write)");
-        return NULL;
+        return;
     }
 
-    if(open(notif_pipe_path, O_WRONLY) < 0) {
+    int notif_fd = open(notif_pipe_path, O_WRONLY);
+    if(notif_fd < 0) {
         perror("handle_client: open notif fifo (read)");
-        return NULL;
+        close(req_fd);
+        return;
     }
 
     char response[2] = {OP_CODE_CONNECT, 0};
-    write_full(notif_pipe_path, response, 2);
+    if(write_full(notif_fd, response, 2) < 0){
+        perror("write connect ack");
+        close(req_fd);
+        close(notif_fd);
+        return;
+    }
 
-    while(1){
+    volatile int running = 1;
+    volatile int victory = 0;
+
+    pthread_t send_tid;
+    sender_args_t sargs = { .board = game_board, .notif_fd = notif_fd, .running = &running, .victory = &victory };
+    pthread_create(&send_tid, NULL, sender_thread, &sargs);
+
+    while(running){
         char op_code = 0;
-        ssize_t r = read_full(req_pipe_path, &op_code, 1);
-        if (r<=0){
+
+        int rr = read_full(req_fd, &op_code, 1);
+        if (rr <= 0) { // EOF -> cliente morreu
+            running = 0;
             break;
         }
 
         if(op_code == OP_CODE_DISCONNECT){
+            running = 0;
             break;
         }
-        else if(op_code == OP_CODE_PLAY){
+        
+        if(op_code == OP_CODE_PLAY){
             char command;
-            if(read_full(req_pipe_path, &command,1) > 0){
-                debug("handle_client: read command");
-                command_t play;
-                play.command = command;
-                play.turns = 1;
-                move_pacman(game_board, 0, &play);
+            if(read_full(req_fd, &command, 1) <= 0){
+                running = 0;
+                break;
             }
+
+            command_t play = {.command = command, .turns = 1, .turns_left = 1};
+
+            pthread_rwlock_wrlock(&game_board->state_lock);
+            int res = move_pacman(game_board, 0, &play);
+            if (res == REACHED_PORTAL) victory = 1;
+            pthread_rwlock_unlock(&game_board->state_lock);
             
         }
-        else if(op_code == OP_CODE_BOARD){
-            // enviar board
-        }
     }
-    
 
-    
+    pthread_join(send_tid, NULL);
+    close(req_fd);
+    close(notif_fd);
 }
 
 int main(int argc, char** argv) {
@@ -272,6 +370,7 @@ int main(int argc, char** argv) {
 
     int max_games = atoi(argv[2]);
     char *fifo_registo = argv[3];
+    (void)max_games;
 
     if (mkfifo(fifo_registo, 0666) == -1) {
         perror("Erro ao criar o FIFO");
