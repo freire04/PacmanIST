@@ -63,6 +63,7 @@ static void session_reset(void){
     session.notif_pipe = -1;
     session.req_pipe_path[0] = '\0';
     session.notif_pipe_path[0] = '\0';
+	memset(&last_meta, 0, 	sizeof(last_meta));
 }
 
 int pacman_connect(char const *req_pipe_path, 

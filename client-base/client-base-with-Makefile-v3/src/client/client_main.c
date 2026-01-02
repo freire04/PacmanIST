@@ -12,20 +12,30 @@
 #include <stdbool.h>
 #include <unistd.h>
 
+#define MAX_BOARD_CELLS 1000000
 
-Board board;
-bool stop_execution = false;
-int tempo;
+static bool stop_execution = false;
+static int tempo = 500;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static char *tabuleiro = NULL;
 
 static void *receiver_thread(void *arg) {
     (void)arg;
 
-    while (true) {
-        
-        Board board = receive_board_update();
+    while (1) {
 
-        if (!board.data || board.game_over == 1){
+        if (receive_board_updates(tabuleiro) < 0){
+            pthread_mutex_lock(&mutex);
+            stop_execution = true;
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
+
+        Board meta = get_last_board_meta();
+
+        size_t cells = (size_t) meta.width * (size_t) meta.height;
+        if (meta.width <= 0 || meta.height <= 0 || cells > MAX_BOARD_CELLS) {
             pthread_mutex_lock(&mutex);
             stop_execution = true;
             pthread_mutex_unlock(&mutex);
@@ -33,11 +43,19 @@ static void *receiver_thread(void *arg) {
         }
 
         pthread_mutex_lock(&mutex);
-        tempo = board.tempo;
+        tempo = meta.tempo;
+        if(meta.game_over == 1 || meta.victory == 1)
+            stop_execution = true;
         pthread_mutex_unlock(&mutex);
 
-        draw_board_client(board);
+        Board draw = meta;
+        draw.data = tabuleiro;
+
+        draw_board_client(draw);
         refresh_screen();
+
+        if (meta.game_over == 1 || meta.victory == 1)
+            break;
     }
 
     debug("Returning receiver thread...\n");
@@ -76,6 +94,9 @@ int main(int argc, char *argv[]) {
 
     open_debug_file("client-debug.log");
 
+    unlink(req_pipe_path);
+    unlink(notif_pipe_path);
+
     if (mkfifo(req_pipe_path, 0666)< 0) {
         perror("Failed to create request pipe");
         return 1;
@@ -88,16 +109,32 @@ int main(int argc, char *argv[]) {
 
     if (pacman_connect(req_pipe_path, notif_pipe_path, register_pipe) != 0) {
         perror("Failed to connect to server");
+        unlink(req_pipe_path);
+        unlink(notif_pipe_path);
         return 1;
     }
 
-    pthread_t receiver_thread_id;
-    pthread_create(&receiver_thread_id, NULL, receiver_thread, NULL);
+    tabuleiro = malloc(MAX_BOARD_CELLS);
+    if(!tabuleiro){
+        perror("malloc tabuleiro");
+        pacman_disconnect();
+        return 1;
+    }
 
     terminal_init();
     set_timeout(500);
-    draw_board_client(board);
+    clear();
+    mvprintw(0, 0, "A ligar ao servidor...");
     refresh_screen();
+
+    pthread_t receiver_thread_id;
+    if(pthread_create(&receiver_thread_id, NULL, receiver_thread, NULL) != 0){
+        perror("pthread_create");
+        pacman_disconnect();
+        free(tabuleiro);
+        terminal_cleanup();
+        return 1;
+    }
 
     char command;
     int ch;
@@ -105,10 +142,10 @@ int main(int argc, char *argv[]) {
     while (1) {
 
         pthread_mutex_lock(&mutex);
-        if (stop_execution){
-            pthread_mutex_unlock(&mutex);
-            break;}
+        bool stop = stop_execution;
         pthread_mutex_unlock(&mutex);
+        if(stop)
+            break;
 
         if (cmd_fp) {
             // Input from file
@@ -125,7 +162,7 @@ int main(int argc, char *argv[]) {
             if (command == '\n' || command == '\r' || command == '\0')
                 continue;
 
-            command = toupper(command);
+            command = (char)toupper((unsigned char) command);
             
             // Wait for tempo, to not overflow pipe with requests
             pthread_mutex_lock(&mutex);
@@ -137,7 +174,7 @@ int main(int argc, char *argv[]) {
         } else {
             // Interactive input
             command = get_input();
-            command = toupper(command);
+            command = (char)toupper((unsigned char)command);
         }
 
         if (command == '\0')
@@ -150,7 +187,10 @@ int main(int argc, char *argv[]) {
 
         debug("Command: %c\n", command);
 
-        pacman_play(command);
+        if(pacman_play(command) < 0){
+            debug("pacman_play failed\n");
+            break;
+        }
 
     }
 
@@ -161,6 +201,7 @@ int main(int argc, char *argv[]) {
     if (cmd_fp)
         fclose(cmd_fp);
 
+    free(tabuleiro);
     pthread_mutex_destroy(&mutex);
 
     terminal_cleanup();

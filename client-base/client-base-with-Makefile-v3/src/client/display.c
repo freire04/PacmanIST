@@ -116,7 +116,7 @@ void draw_board_client(Board board) {
                     break;
 
                 default:
-                    addch(ch);
+                    addch((unsigned char)ch);
                     break;
             }
         }
@@ -131,7 +131,7 @@ void draw_board_client(Board board) {
 
 // Does exaclty the same as draw board but stores the output in a string instead of printing it
 char* get_board_displayed(board_t* board) {
-    size_t buffer_size = (board->width  * board->height) + 1;
+    size_t buffer_size = (size_t)board->width * (size_t)board->height + 1;
     char* output = malloc(buffer_size);
     size_t pos = 0;
     for (int y = 0; y < board->height; y++) {
@@ -269,7 +269,7 @@ void draw_board(board_t* board, int mode) {
                     break;
 
                 default:
-                    addch(ch);
+                    addch((unsigned char)ch);
                     break;
             }
         }
@@ -285,7 +285,7 @@ void draw_board(board_t* board, int mode) {
 void draw(char c, int colour_i, int pos_x, int pos_y) {
     move(pos_y, pos_x);
     attron(COLOR_PAIR(colour_i) | A_BOLD);
-    addch(c);
+    addch((chtype)(unsigned char)c);
     attroff(COLOR_PAIR(colour_i) | A_BOLD);
 }
 
