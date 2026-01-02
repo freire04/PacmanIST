@@ -2,6 +2,7 @@
 #include "protocol.h"
 #include "display.h"
 #include "debug.h"
+
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
+
 
 Board board;
 bool stop_execution = false;
