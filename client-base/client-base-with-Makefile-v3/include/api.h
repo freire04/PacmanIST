@@ -8,16 +8,17 @@ typedef struct {
   int victory;
   int game_over;
   int accumulated_points;
-  char* data;
 } Board;
 
 int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char const *server_pipe_path);
 
-void pacman_play(char command);
+int pacman_play(char command);
 
-/// @return 0 if the disconnection was successful, 1 otherwise.
-int pacman_disconnect();
+int pacman_disconnect(void);
 
-Board receive_board_update(void);
+int receive_board_updates(char *tabuleiro);
+
+// (helper) obter metadados do último update recebido
+Board get_last_board_meta(void);
 
 #endif
