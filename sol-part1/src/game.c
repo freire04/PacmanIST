@@ -36,28 +36,19 @@ typedef struct {
     board_t *board;
 } host_args_t;
 
+typedef struct {
+    board_t *board;
+    int req_fd;
+    volatile int *running;
+    volatile int *victory;
+} pacman_args_t;
+
+static int read_full(int fd, void *buff, size_t n);
+static int write_full(int fd, const void *buf, size_t n);
 static void handle_client(const char* req_pipe_path, const char* notif_pipe_path, board_t* game_board);
 
 int thread_shutdown = 0;
 
-int create_backup() {
-    // clear the terminal for process transition
-    terminal_cleanup();
-
-    pid_t child = fork();
-
-    if(child != 0) {
-        if (child < 0) {
-            return -1;
-        }
-
-        return child;
-    } else {
-        debug("[%d] Created\n", getpid());
-
-        return 0;
-    }
-}
 
 void screen_refresh(board_t * game_board, int mode) {
     debug("REFRESH\n");
@@ -142,68 +133,53 @@ void* ncurses_thread(void *arg) {
 }
 
 void* pacman_thread(void *arg) {
-    board_t *board = (board_t*) arg;
+    // Usamos uma struct de argumentos para passar o board e o FD do pipe
+    pacman_args_t *p_args = (pacman_args_t*) arg;
+    board_t *board = p_args->board;
+    int req_fd = p_args->req_fd;
+    volatile int *running = p_args->running;
+    volatile int *victory = p_args->victory;
 
-    pacman_t* pacman = &board->pacmans[0];
-
-    int *retval = malloc(sizeof(int));
-
-    while (true) {
-        if(!pacman->alive) {
-            *retval = LOAD_BACKUP;
-            return (void*) retval;
+    while (*running) {
+        char op_code = 0;
+        
+        if (read_full(req_fd, &op_code, 1) <= 0) {
+            *running = 0; // Cliente desconectou
+            break;
         }
 
-        sleep_ms(board->tempo * (1 + pacman->passo));
+        if (op_code == OP_CODE_DISCONNECT) {
+            *running = 0;
+            break;
+        }
 
-        command_t* play;
-        command_t c;
-        if (pacman->n_moves == 0) {
-            c.command = get_input();
+        if (op_code == OP_CODE_PLAY) {
+            char cmd;
+            if (read_full(req_fd, &cmd, 1) <= 0) break;
 
-            if(c.command == '\0') {
-                continue;
+            command_t play = {.command = cmd, .turns = 1};
+
+            debug("Comando recebido : %c\n", cmd);
+
+            
+            pthread_rwlock_wrlock(&board->state_lock);
+            
+            int result = move_pacman(board, 0, &play);
+            
+            if (result == REACHED_PORTAL) {
+                *victory = 1;
+                *running = 0;
+            } else if (result == DEAD_PACMAN || !board->pacmans[0].alive) {
+                *running = 0;
             }
-
-            c.turns = 1;
-            play = &c;
+            
+            pthread_rwlock_unlock(&board->state_lock);
         }
-        else {
-            play = &pacman->moves[pacman->current_move%pacman->n_moves];
-        }
-
-        debug("KEY %c\n", play->command);
-
-        // QUIT
-        if (play->command == 'Q') {
-            *retval = QUIT_GAME;
-            return (void*) retval;
-        }
-        // FORK
-        if (play->command == 'G') {
-            *retval = CREATE_BACKUP;
-            return (void*) retval;
-        }
-
-        pthread_rwlock_rdlock(&board->state_lock);
-
-        int result = move_pacman(board, 0, play);
-        if (result == REACHED_PORTAL) {
-            // Next level
-            *retval = NEXT_LEVEL;
-            break;
-        }
-
-        if(result == DEAD_PACMAN) {
-            // Restart from child, wait for child, then quit
-            *retval = LOAD_BACKUP;
-            break;
-        }
-
-        pthread_rwlock_unlock(&board->state_lock);
     }
-    pthread_rwlock_unlock(&board->state_lock);
-    return (void*) retval;
+
+    
+    free(p_args);
+    return NULL;
 }
 
 void* ghost_thread(void *arg) {
@@ -325,37 +301,15 @@ void handle_client(const char* req_pipe_path, const char* notif_pipe_path, board
     pthread_t send_tid;
     sender_args_t sargs = { .board = game_board, .notif_fd = notif_fd, .running = &running, .victory = &victory };
     pthread_create(&send_tid, NULL, sender_thread, &sargs);
+    pacman_args_t *p_args = malloc(sizeof(pacman_args_t));
+    p_args->board = game_board;
+    p_args->req_fd = req_fd;
+    p_args->running = &running;
+    p_args->victory = &victory;
 
-    while(running){
-        char op_code = 0;
-
-        int rr = read_full(req_fd, &op_code, 1);
-        if (rr <= 0) { // EOF -> cliente morreu
-            running = 0;
-            break;
-        }
-
-        if(op_code == OP_CODE_DISCONNECT){
-            running = 0;
-            break;
-        }
-        
-        if(op_code == OP_CODE_PLAY){
-            char command;
-            if(read_full(req_fd, &command, 1) <= 0){
-                running = 0;
-                break;
-            }
-
-            command_t play = {.command = command, .turns = 1, .turns_left = 1};
-
-            pthread_rwlock_wrlock(&game_board->state_lock);
-            int res = move_pacman(game_board, 0, &play);
-            if (res == REACHED_PORTAL) victory = 1;
-            pthread_rwlock_unlock(&game_board->state_lock);
-            
-        }
-    }
+    pthread_t pacman_tid;
+    pthread_create(&pacman_tid, NULL, pacman_thread, p_args);
+    pthread_join(pacman_tid, NULL);
 
     pthread_join(send_tid, NULL);
     close(req_fd);
@@ -391,140 +345,56 @@ int main(int argc, char** argv) {
 
     open_debug_file("debug.log");
 
-    terminal_init();
+    //terminal_init();
     
-    int accumulated_points = 0;
-    bool end_game = false;
     board_t game_board;
 
-    pid_t parent_process = getpid(); // Only the parent process can create backups
-
     struct dirent* entry;
-    while ((entry = readdir(level_dir)) != NULL && !end_game) {
+    while ((entry = readdir(level_dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
 
         char *dot = strrchr(entry->d_name, '.');
         if (!dot) continue;
 
         if (strcmp(dot, ".lvl") == 0) {
-            load_level(&game_board, entry->d_name, argv[1], accumulated_points);
-            draw_board(&game_board, DRAW_MENU);
-            refresh_screen();
+            load_level(&game_board, entry->d_name, argv[1], 0);
+            
+            pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
+            thread_shutdown = 0;
 
-            while(true) {
-                pthread_t ncurses_tid, pacman_tid;
-                pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
-
-                thread_shutdown = 0;
-
-                debug("Creating threads\n");
-
-                pthread_create(&pacman_tid, NULL, pacman_thread, (void*) &game_board);
-                for (int i = 0; i < game_board.n_ghosts; i++) {
-                    ghost_thread_arg_t *arg = malloc(sizeof(ghost_thread_arg_t));
-                    arg->board = &game_board;
-                    arg->ghost_index = i;
-                    pthread_create(&ghost_tids[i], NULL, ghost_thread, (void*) arg);
-                }
-                pthread_create(&ncurses_tid, NULL, ncurses_thread, (void*) &game_board);
-
-                int *retval;
-                pthread_join(pacman_tid, (void**)&retval);
-
-                pthread_rwlock_wrlock(&game_board.state_lock);
-                thread_shutdown = 1;
-                pthread_rwlock_unlock(&game_board.state_lock);
-
-                pthread_join(ncurses_tid, NULL);
-                for (int i = 0; i < game_board.n_ghosts; i++) {
-                    pthread_join(ghost_tids[i], NULL);
-                }
-
-                free(ghost_tids);
-
-                int result = *retval;
-                free(retval);
-
-                if(result == NEXT_LEVEL) {
-                    screen_refresh(&game_board, DRAW_WIN);
-                    sleep_ms(game_board.tempo);
-                    break;
-                }
-
-                if(result == CREATE_BACKUP) {
-                    debug("CREATE_BACKUP\n");
-                    if (parent_process == getpid()) {
-                        debug("PARENT\n");
-                        pid_t child = create_backup();
-                        if (child == -1) {
-                            // failed to fork
-                            debug("[%d] Failed to create backup\n", getpid());
-                            end_game = true;
-                            break;
-                        }
-                        if (child > 0) {
-                            debug("Parent process\n");
-                            int status;
-                            wait(&status);
-
-                            if (WIFEXITED(status)) {
-                                int code = WEXITSTATUS(status);
-                                
-                                if (code == 1) {
-                                    terminal_init();
-                                    debug("[%d] Save Resuming...\n", getpid());
-                                }
-                                else { // End game or error
-                                    end_game = true;
-                                    break;
-                                }
-                            }
-                        } else {
-                            terminal_init();
-                            debug("Child process\n");
-                        }
-
-                    } else {
-                        debug("[%d] Only parent process can have a save\n", getpid());
-                    }
-                }
-
-                if(result == LOAD_BACKUP) {
-                    if(getpid() != parent_process) {
-                        terminal_cleanup();
-                        unload_level(&game_board);
-                        
-                        close_debug_file();
-
-                        if (closedir(level_dir) == -1) {
-                            fprintf(stderr, "Failed to close directory\n");
-                            return 0;
-                        }
-
-                        return 1;
-                    } else {
-                        // No backup process, game over
-                        result = QUIT_GAME;
-                    }
-                }
-
-                if(result == QUIT_GAME) {
-                    screen_refresh(&game_board, DRAW_GAME_OVER); 
-                    sleep_ms(game_board.tempo);
-                    end_game = true;
-                    break;
-                }
-      
-                screen_refresh(&game_board, DRAW_MENU); 
-
-                accumulated_points = game_board.pacmans[0].points;      
+            debug("Creating threads\n");
+            
+            // Criar threads dos fantasmas
+            for (int i = 0; i < game_board.n_ghosts; i++) {
+                ghost_thread_arg_t *arg = malloc(sizeof(ghost_thread_arg_t));
+                arg->board = &game_board;
+                arg->ghost_index = i;
+                pthread_create(&ghost_tids[i], NULL, ghost_thread, (void*) arg);
             }
-            print_board(&game_board);
-            unload_level(&game_board);
+            
+            // Criar thread que aceita clientes
+            pthread_t host_tid;
+            host_args_t host_args = {.fifo_registo = fifo_registo, .board = &game_board};
+            pthread_create(&host_tid, NULL, host_thread, &host_args);
+            
+            // Aguardar término do servidor
+            pthread_join(host_tid, NULL);
+
+            // Parar fantasmas
+            pthread_rwlock_wrlock(&game_board.state_lock);
+            thread_shutdown = 1;
+            pthread_rwlock_unlock(&game_board.state_lock);
+
+            for (int i = 0; i < game_board.n_ghosts; i++) {
+                pthread_join(ghost_tids[i], NULL);
+            }
+
+            free(ghost_tids);
+            break;
         }
     }    
 
-    terminal_cleanup();
+    //terminal_cleanup();
 
     close_debug_file();
 
