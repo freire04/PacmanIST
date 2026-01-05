@@ -33,8 +33,8 @@ typedef struct{
 
 typedef struct {
     board_t *board;
-    char fifo_notif[MAX_PIPE_PATH_LENGTH];
-    char fifo_req[MAX_PIPE_PATH_LENGTH];
+    int req_fd;
+    int notif_fd;
 } pacman_thread_arg_t;
 
 typedef struct {
@@ -100,108 +100,144 @@ void* host_thread(void *arg){
     char *fifo_registo = host_arg->fifo_registo;
     int max_games = host_arg->max_games;
 
+
     int games_played = 0;
     int running = 1;
 
+    int reg_fd = open(fifo_registo, O_RDWR);
+    if (reg_fd < 0) {
+        perror("host_thread: open fifo_registo");
+        close(reg_fd);
+        return -1;
+    }
+
     while(running){
         // Wait for a client to connect
-        int reg_fd = open(fifo_registo, O_RDONLY);
-        if (reg_fd < 0) {
-            perror("host_thread: open fifo_registo");
-            continue;
-        }
+        
         message_t msg;
         if (read_full(reg_fd, &msg, sizeof(message_t)) <= 0) {
-            perror("host_thread: read message");
-            close(reg_fd);
             continue;
         }
 
         if(msg.op_code != OP_CODE_CONNECT) {
             debug("host_thread: invalid op_code %d\n", msg.op_code);
-            close(reg_fd);
             continue;
         }
-        if (mkfifo(msg.req_pipe, 0666) == -1) {
-            perror("Erro ao criar o FIFO");
-            return -1;
-        }
-        if (mkfifo(msg.notif_pipe, 0666) == -1) {
-            perror("Erro ao criar o FIFO");
-            return -1;
-        }
 
-
-
-
-
-
-        
-       
-
-
-
-    
-    }
-}
-void* pacman_thread(void *arg) {
-    board_t *board = (board_t*) arg;
-
-    pacman_t* pacman = &board->pacmans[0];
-
-    int *retval = malloc(sizeof(int));
-
-    while (true) {
-        if(!pacman->alive) {
-            *retval = LOAD_BACKUP;
-            return (void*) retval;
-        }
-
-        sleep_ms(board->tempo * (1 + pacman->passo));
-
-        command_t* play;
-        command_t c;
-        if (pacman->n_moves == 0) {
-            c.command = get_input();
-
-            if(c.command == '\0') {
+        if(msg.op_code == OP_CODE_CONNECT){
+            debug("host_thread: trying to connect a new client\n");
+            if(games_played >= max_games){
+                debug("host_thread: max games reached, rejecting client\n");
+                continue;
+            }
+            games_played++;
+            
+            int req_fd = open(msg.req_pipe, O_RDONLY);
+            if(req_fd < 0){
+                perror("host_thread: open req_pipe");
+                continue;
+            }
+            
+            
+            int notif_fd = open(msg.notif_pipe, O_WRONLY);
+            if(notif_fd < 0){
+                perror("host_thread: open notif_pipe");
                 continue;
             }
 
-            c.turns = 1;
-            play = &c;
-        }
-        else {
-            play = &pacman->moves[pacman->current_move%pacman->n_moves];
-        }
+            char ack[2] = {OP_CODE_CONNECT,0};
+            if (write_full(notif_fd, ack, 2) != 0) {
+                perror("Erro ao enviar ACK ao cliente");
+                close(req_fd);
+                close(notif_fd);
+                continue;
+            }
+            debug("host_thread: client connected successfully\n");
 
-        debug("KEY %c\n", play->command);
+            pacman_thread_arg_t *p_args = malloc(sizeof(pacman_thread_arg_t));
+            if (p_args == NULL) {
+                close(req_fd); 
+                close(notif_fd);
+                continue;
+            }
 
-        // QUIT
-        if (play->command == 'Q') {
-            *retval = QUIT_GAME;
-            return (void*) retval;
+            p_args->board = board;
+            p_args->req_fd = req_fd;
+            p_args->notif_fd = notif_fd;
+
+           
+            pthread_t pacman_tid;
+            if (pthread_create(&pacman_tid, NULL, pacman_thread, p_args) != 0) {
+                perror("Falha ao criar thread");
+                free(p_args);
+                close(req_fd);
+                close(notif_fd);
+                continue;
+            }
+            debug("host_thread: pacman thread created\n");
+            debug("host_thread: waiting for pacman thread to finish\n");
+            pthread_join(pacman_tid, NULL);
+            games_played--;
+            debug("host_thread: pacman thread finished\n");
+            
+
+
+
         }
-        
-        pthread_rwlock_rdlock(&board->state_lock);
-
-        int result = move_pacman(board, 0, play);
-        if (result == REACHED_PORTAL) {
-            // Next level
-            *retval = NEXT_LEVEL;
-            break;
-        }
-
-        if(result == DEAD_PACMAN) {
-            // Restart from child, wait for child, then quit
-            *retval = LOAD_BACKUP;
-            break;
-        }
-
-        pthread_rwlock_unlock(&board->state_lock);
+    
     }
-    pthread_rwlock_unlock(&board->state_lock);
-    return (void*) retval;
+    close(reg_fd);
+    return NULL;
+}
+
+
+void* pacman_thread(void *arg) {
+    pacman_thread_arg_t *p_args = (pacman_thread_arg_t*) arg;
+    board_t *board = p_args->board;
+    int req_fd = p_args->req_fd;
+    int notif_fd = p_args->notif_fd;
+
+    pacman_t* pacman = &board->pacmans[0];
+
+
+    
+    while (true) {
+        if(!pacman->alive) {
+            break;
+        }
+
+        //sleep_ms(board->tempo * (1 + pacman->passo));
+
+        char op_code;
+        if (read_full(req_fd, &op_code, 1) <= 0) break;
+
+        if(op_code == OP_CODE_PLAY){
+            char move_command;
+            if (read_full(req_fd, &move_command, 1) <= 0) break;
+
+            command_t command;
+            command.command = move_command;
+            command.turns = 1;
+            command.turns_left = 1;
+
+
+            pthread_rwlock_wrlock(&board->state_lock);
+            int move_result = move_pacman(board, 0, &command);
+            
+
+            if(move_result == REACHED_PORTAL){
+                //nao sei ainda o que fazer aqui
+                pthread_rwlock_unlock(&board->state_lock);
+            }
+            else if(move_result == DEAD_PACMAN){
+                debug("pacman_thread: pacman died\n");
+                pthread_rwlock_unlock(&board->state_lock);
+                break;
+            }
+            pthread_rwlock_unlock(&board->state_lock);
+        }
+    }
+
 }
 
 void* ghost_thread(void *arg) {
@@ -259,7 +295,7 @@ int main(int argc, char** argv) {
     bool end_game = false;
     board_t game_board;
 
-    pid_t parent_process = getpid(); // Only the parent process can create backups
+    
 
     struct dirent* entry;
     while ((entry = readdir(level_dir)) != NULL && !end_game) {
