@@ -126,7 +126,7 @@ void draw_board(board_t* board, int mode) {
                     break;
 
                 default:
-                    addch(ch);
+                    addch((chtype)(unsigned char)ch);
                     break;
             }
         }

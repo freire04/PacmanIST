@@ -1,5 +1,3 @@
-#include "board.h"
-#include "display.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -10,8 +8,15 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <stdio.h>
+#include <stdbool.h> 
+#include <stdint.h>
+#include <signal.h>
+#include <errno.h>
+
+#include "board.h"
+#include "display.h"
 #include "protocol.h"
-#include <sys/stat.h>
 
 #define CONTINUE_PLAY 0
 #define NEXT_LEVEL 1
@@ -24,6 +29,12 @@ typedef struct {
     int ghost_index;
 } ghost_thread_arg_t;
 
+typedef struct {
+    board_t *board;
+    int notif_fd;
+    volatile int *running;
+    volatile int *victory;
+} sender_args_t;
 typedef struct{
     board_t *board;
     char fifo_registo[MAX_PIPE_PATH_LENGTH];
@@ -34,7 +45,8 @@ typedef struct{
 typedef struct {
     board_t *board;
     int req_fd;
-    int notif_fd;
+    volatile int *running;
+    volatile int *victory;
 } pacman_thread_arg_t;
 
 typedef struct {
@@ -43,6 +55,12 @@ typedef struct {
     char notif_pipe[MAX_PIPE_PATH_LENGTH]; // Path do FIFO de notificações
     char command;                          // Para OP_CODE_PLAY
 } message_t;
+
+static void* pacman_thread(void *arg);
+static void* ghost_thread(void *arg);
+static void* host_thread(void *arg);
+static void* ncurses_thread(void *arg);
+static void* sender_thread(void *arg);
 
 int thread_shutdown = 0;
 static int read_full(int fd, void *buff, size_t n);
@@ -94,151 +112,245 @@ void* ncurses_thread(void *arg) {
     }
 }
 
+static char *build_board_data_for_client(board_t *board){
+    size_t cells = (size_t)board->width * (size_t)board->height;
+    char *out = malloc(cells);
+    if (!out) return NULL;
+
+    size_t pos = 0;
+    for (int y = 0; y < board->height; y++) {
+        for (int x = 0; x < board->width; x++) {
+            int idx = y * board->width + x;
+            char c = board->board[idx].content;
+
+            // detectar se há fantasma carregado nesta célula
+            int ghost_charged = 0;
+            if (c == 'M') {
+                for (int g = 0; g < board->n_ghosts; g++) {
+                    ghost_t *gh = &board->ghosts[g];
+                    if (gh->pos_x == x && gh->pos_y == y) {
+                        ghost_charged = gh->charged ? 1 : 0;
+                        break;
+                    }
+                }
+            }
+
+            switch (c) {
+                case 'W': out[pos++] = '#'; break;
+                case 'P': out[pos++] = 'C'; break;
+                case 'M': out[pos++] = ghost_charged ? 'G' : 'M'; break;
+                case ' ':
+                    if (board->board[idx].has_portal) out[pos++] = '@';
+                    else if (board->board[idx].has_dot) out[pos++] = '.';
+                    else out[pos++] = ' ';
+                    break;
+                default:
+                    out[pos++] = ' '; // fallback seguro
+                    break;
+            }
+        }
+    }
+
+    return out;
+}
+
+static void* sender_thread(void *arg){
+    sender_args_t *a = (sender_args_t*)arg;
+
+    while (*a->running) {
+        sleep_ms(a->board->tempo);
+
+        int width, height, tempo, victory, game_over, points;
+        char *grid = NULL;
+
+        pthread_rwlock_rdlock(&a->board->state_lock);
+        width  = a->board->width;
+        height = a->board->height;
+        tempo  = a->board->tempo;
+        points = a->board->pacmans[0].points;
+        game_over = (a->board->pacmans[0].alive == 0);
+        victory   = (*a->victory);
+
+        grid = build_board_data_for_client(a->board); // malloc
+        pthread_rwlock_unlock(&a->board->state_lock);
+
+        if (!grid) {
+            *a->running = 0;
+            break;
+        }
+
+        char op = OP_CODE_BOARD;
+        size_t cells = (size_t)width * (size_t)height;
+
+        if (write_full(a->notif_fd, &op, 1) < 0 ||
+            write_full(a->notif_fd, &width, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &height, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &tempo, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &victory, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &game_over, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, &points, sizeof(int)) < 0 ||
+            write_full(a->notif_fd, grid, cells) < 0) {
+            free(grid);
+            *a->running = 0;
+            break;
+        }
+
+        free(grid);
+
+        if (victory || game_over) {
+            *a->running = 0;
+            break;
+        }
+    }
+    return NULL;
+}
+
 void* host_thread(void *arg){
     host_thread_arg_t *host_arg = (host_thread_arg_t*) arg;
     board_t *board = host_arg->board;
     char *fifo_registo = host_arg->fifo_registo;
     int max_games = host_arg->max_games;
 
-
     int games_played = 0;
     int running = 1;
+    int last_result = QUIT_GAME;
 
     int reg_fd = open(fifo_registo, O_RDWR);
     if (reg_fd < 0) {
         perror("host_thread: open fifo_registo");
-        close(reg_fd);
-        return -1;
+        return (void*)(intptr_t)QUIT_GAME;
     }
 
-    while(running){
-        // Wait for a client to connect
-        
-        message_t msg;
-        if (read_full(reg_fd, &msg, sizeof(message_t)) <= 0) {
+    while (running) {
+        char op = 0;
+        char req_pipe[MAX_PIPE_PATH_LENGTH] = {0};
+        char notif_pipe[MAX_PIPE_PATH_LENGTH] = {0};
+
+        int rr = read_full(reg_fd, &op, 1);
+        if (rr <= 0) continue;
+
+        if (op != OP_CODE_CONNECT) {
+            debug("host_thread: invalid op_code %d\n", (int) op);
             continue;
         }
 
-        if(msg.op_code != OP_CODE_CONNECT) {
-            debug("host_thread: invalid op_code %d\n", msg.op_code);
-            continue;
+        if (read_full(reg_fd, req_pipe, MAX_PIPE_PATH_LENGTH) <= 0) continue;
+        if (read_full(reg_fd, notif_pipe, MAX_PIPE_PATH_LENGTH) <= 0) continue;
+
+        req_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
+        notif_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
+
+        if (max_games <= games_played) {
+            continue; // 1.1: podes “rejeitar”; 1.2: aqui tens de bloquear
         }
 
-        if(msg.op_code == OP_CODE_CONNECT){
-            debug("host_thread: trying to connect a new client\n");
-            if(games_played >= max_games){
-                debug("host_thread: max games reached, rejecting client\n");
-                continue;
-            }
-            games_played++;
-            
-            int req_fd = open(msg.req_pipe, O_RDONLY);
-            if(req_fd < 0){
-                perror("host_thread: open req_pipe");
-                continue;
-            }
-            
-            
-            int notif_fd = open(msg.notif_pipe, O_WRONLY);
-            if(notif_fd < 0){
-                perror("host_thread: open notif_pipe");
-                continue;
-            }
+        games_played++;
 
-            char ack[2] = {OP_CODE_CONNECT,0};
-            if (write_full(notif_fd, ack, 2) != 0) {
-                perror("Erro ao enviar ACK ao cliente");
-                close(req_fd);
-                close(notif_fd);
-                continue;
-            }
-            debug("host_thread: client connected successfully\n");
-
-            pacman_thread_arg_t *p_args = malloc(sizeof(pacman_thread_arg_t));
-            if (p_args == NULL) {
-                close(req_fd); 
-                close(notif_fd);
-                continue;
-            }
-
-            p_args->board = board;
-            p_args->req_fd = req_fd;
-            p_args->notif_fd = notif_fd;
-
-           
-            pthread_t pacman_tid;
-            if (pthread_create(&pacman_tid, NULL, pacman_thread, p_args) != 0) {
-                perror("Falha ao criar thread");
-                free(p_args);
-                close(req_fd);
-                close(notif_fd);
-                continue;
-            }
-            debug("host_thread: pacman thread created\n");
-            debug("host_thread: waiting for pacman thread to finish\n");
-            pthread_join(pacman_tid, NULL);
+        int notif_fd = open(notif_pipe, O_WRONLY);
+        if (notif_fd < 0) {
+            perror("host_thread: open notif_pipe");
             games_played--;
-            debug("host_thread: pacman thread finished\n");
-            
-
-
-
+            continue;
         }
-    
+
+        // ACK connect (op_code=1, result=0)
+        char ack[2] = {OP_CODE_CONNECT, 0};
+        if (write_full(notif_fd, ack, 2) != 0) {
+            close(notif_fd);
+            games_played--;
+            continue;
+        }
+
+        int req_fd = open(req_pipe, O_RDONLY);
+        if (req_fd < 0) {
+            perror("host_thread: open req_pipe");
+            close(notif_fd);
+            games_played--;
+            continue;
+        }
+
+        volatile int running_session = 1;
+        volatile int victory = 0;
+
+        pthread_t sender_tid, pacman_tid;
+
+        sender_args_t sargs = {
+            .board = board,
+            .notif_fd = notif_fd,
+            .running = &running_session,
+            .victory = &victory
+        };
+
+        pacman_thread_arg_t pargs = {
+            .board = board,
+            .req_fd = req_fd,
+            .running = &running_session,
+            .victory = &victory
+        };
+
+        pthread_create(&sender_tid, NULL, sender_thread, &sargs);
+        pthread_create(&pacman_tid, NULL, pacman_thread, &pargs);
+
+        pthread_join(pacman_tid, NULL);
+        running_session = 0;
+        pthread_join(sender_tid, NULL);
+
+        close(notif_fd);
+        close(req_fd);
+
+        last_result = victory ? NEXT_LEVEL : QUIT_GAME;
+
+        games_played--;
+        running = 0; // 1.1: só uma sessão e termina
     }
+
     close(reg_fd);
-    return NULL;
+    return (void*)(intptr_t)last_result;
 }
 
 
-void* pacman_thread(void *arg) {
-    pacman_thread_arg_t *p_args = (pacman_thread_arg_t*) arg;
-    board_t *board = p_args->board;
-    int req_fd = p_args->req_fd;
-    int notif_fd = p_args->notif_fd;
 
-    pacman_t* pacman = &board->pacmans[0];
+static void* pacman_thread(void *arg) {
+    pacman_thread_arg_t *p = (pacman_thread_arg_t*)arg;
+    board_t *board = p->board;
 
-
-    
-    while (true) {
-        if(!pacman->alive) {
+    while (*p->running) {
+        char op_code = 0;
+        int rr = read_full(p->req_fd, &op_code, 1);
+        if (rr <= 0) { // cliente morreu/fechou
+            *p->running = 0;
             break;
         }
 
-        //sleep_ms(board->tempo * (1 + pacman->passo));
+        if (op_code == OP_CODE_DISCONNECT) {
+            *p->running = 0;
+            break;
+        }
 
-        char op_code;
-        if (read_full(req_fd, &op_code, 1) <= 0) break;
-
-        if(op_code == OP_CODE_PLAY){
-            char move_command;
-            if (read_full(req_fd, &move_command, 1) <= 0) break;
-
-            command_t command;
-            command.command = move_command;
-            command.turns = 1;
-            command.turns_left = 1;
-
-
-            pthread_rwlock_wrlock(&board->state_lock);
-            int move_result = move_pacman(board, 0, &command);
-            
-
-            if(move_result == REACHED_PORTAL){
-                //nao sei ainda o que fazer aqui
-                pthread_rwlock_unlock(&board->state_lock);
-            }
-            else if(move_result == DEAD_PACMAN){
-                debug("pacman_thread: pacman died\n");
-                pthread_rwlock_unlock(&board->state_lock);
+        if (op_code == OP_CODE_PLAY) {
+            char move_command = 0;
+            if (read_full(p->req_fd, &move_command, 1) <= 0) {
+                *p->running = 0;
                 break;
             }
-            pthread_rwlock_unlock(&board->state_lock);
-        }
-    }
 
-}
+            command_t cmd = {.command = move_command, .turns = 1, .turns_left = 1};
+
+            pthread_rwlock_wrlock(&board->state_lock);
+                int res = move_pacman(board, 0, &cmd);
+                if (res == REACHED_PORTAL) {
+                    *p->victory = 1;
+                    *p->running = 0;
+                } else if (res == DEAD_PACMAN) {
+                    *p->running = 0;
+                }
+                pthread_rwlock_unlock(&board->state_lock);
+            }
+        }
+
+        close(p->req_fd);
+        return NULL;
+    }
 
 void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
@@ -252,7 +364,7 @@ void* ghost_thread(void *arg) {
     while (true) {
         sleep_ms(board->tempo * (1 + ghost->passo));
 
-        pthread_rwlock_rdlock(&board->state_lock);
+        pthread_rwlock_wrlock(&board->state_lock);
         if (thread_shutdown) {
             pthread_rwlock_unlock(&board->state_lock);
             pthread_exit(NULL);
@@ -261,6 +373,7 @@ void* ghost_thread(void *arg) {
         move_ghost(board, ghost_ind, &ghost->moves[ghost->current_move%ghost->n_moves]);
         pthread_rwlock_unlock(&board->state_lock);
     }
+    return NULL;
 }
 
 int main(int argc, char** argv) {
@@ -276,8 +389,22 @@ int main(int argc, char** argv) {
     srand((unsigned int)time(NULL));
 
     if (mkfifo(fifo_registo, 0666) == -1) {
-        perror("Erro ao criar o FIFO");
-        return -1;
+        if (errno == EEXIST) {
+            struct stat st;
+            if (stat(fifo_registo, &st) == 0 && S_ISFIFO(st.st_mode)) {
+                // já existe e é FIFO -> ok, reutiliza
+            } else {
+                // existe mas não é FIFO -> remove e cria
+                unlink(fifo_registo);
+                if (mkfifo(fifo_registo, 0666) == -1) {
+                    perror("Erro ao criar o FIFO");
+                    return -1;
+                }
+            }
+        } else {
+            perror("Erro ao criar o FIFO");
+            return -1;
+        }
     }
 
     DIR* level_dir = opendir(argv[1]);
@@ -294,8 +421,7 @@ int main(int argc, char** argv) {
     int accumulated_points = 0;
     bool end_game = false;
     board_t game_board;
-
-    
+    signal(SIGPIPE, SIG_IGN);
 
     struct dirent* entry;
     while ((entry = readdir(level_dir)) != NULL && !end_game) {
@@ -311,7 +437,15 @@ int main(int argc, char** argv) {
 
             while(true) {
                 pthread_t ncurses_tid, host_tid;
-                pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
+                pthread_t *ghost_tids = NULL;
+
+                if (game_board.n_ghosts > 0) {
+                    ghost_tids = malloc((size_t)game_board.n_ghosts * sizeof(*ghost_tids));
+                    if (!ghost_tids) {
+                        perror("malloc ghost_tids");
+                        return -1;
+                    }
+                }
 
                 thread_shutdown = 0;
 
@@ -323,9 +457,6 @@ int main(int argc, char** argv) {
                 host_arg.max_games = max_games;
                 pthread_create(&host_tid, NULL, host_thread, (void*) &host_arg);
 
-                
-
-                
                 for (int i = 0; i < game_board.n_ghosts; i++) {
                     ghost_thread_arg_t *arg = malloc(sizeof(ghost_thread_arg_t));
                     arg->board = &game_board;
@@ -334,8 +465,9 @@ int main(int argc, char** argv) {
                 }
                 pthread_create(&ncurses_tid, NULL, ncurses_thread, (void*) &game_board);
 
-                int *retval;
-                pthread_join(host_tid, (void**)&retval);
+                void *ret = NULL;
+                pthread_join(host_tid, &ret);
+                int result = (int)(intptr_t) ret;
 
                 pthread_rwlock_wrlock(&game_board.state_lock);
                 thread_shutdown = 1;
@@ -348,16 +480,12 @@ int main(int argc, char** argv) {
 
                 free(ghost_tids);
 
-                int result = *retval;
-                free(retval);
-
                 if(result == NEXT_LEVEL) {
                     screen_refresh(&game_board, DRAW_WIN);
                     sleep_ms(game_board.tempo);
                     break;
                 }
 
-    
                 if(result == QUIT_GAME) {
                     screen_refresh(&game_board, DRAW_GAME_OVER); 
                     sleep_ms(game_board.tempo);
@@ -382,5 +510,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Failed to close directory\n");
         return 0;
     }
+
+    unlink(fifo_registo);
     return 0;
 }

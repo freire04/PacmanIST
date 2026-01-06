@@ -33,6 +33,12 @@ static void *receiver_thread(void *arg) {
         }
 
         Board meta = get_last_board_meta();
+        if(meta.victory || meta.game_over){
+            pthread_mutex_lock(&mutex);
+            stop_execution = true;
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
 
         size_t cells = (size_t) meta.width * (size_t) meta.height;
         if (meta.width <= 0 || meta.height <= 0 || cells > MAX_BOARD_CELLS) {
@@ -182,6 +188,9 @@ int main(int argc, char *argv[]) {
 
         if (command == 'Q') {
             debug("Client pressed 'Q', quitting game\n");
+            pthread_mutex_lock(&mutex);
+            stop_execution = true;
+            pthread_mutex_unlock(&mutex);
             break;
         }
 
@@ -194,9 +203,12 @@ int main(int argc, char *argv[]) {
 
     }
 
-    pacman_disconnect();
+    pthread_mutex_lock(&mutex);
+    stop_execution = true;
+    pthread_mutex_unlock(&mutex);
 
     pthread_join(receiver_thread_id, NULL);
+    pacman_disconnect();
 
     if (cmd_fp)
         fclose(cmd_fp);
@@ -205,6 +217,8 @@ int main(int argc, char *argv[]) {
     pthread_mutex_destroy(&mutex);
 
     terminal_cleanup();
+    printf('\n');
+    fflush(stdout);
 
     return 0;
 }
