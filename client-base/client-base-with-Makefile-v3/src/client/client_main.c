@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define MAX_BOARD_CELLS 1000000
 
@@ -89,6 +90,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    signal(SIGPIPE, SIG_IGN);
     char req_pipe_path[MAX_PIPE_PATH_LENGTH];
     char notif_pipe_path[MAX_PIPE_PATH_LENGTH];
 
@@ -217,7 +219,6 @@ int main(int argc, char *argv[]) {
     pthread_mutex_destroy(&mutex);
 
     terminal_cleanup();
-    printf("\n");
     fflush(stdout);
 
     return 0;

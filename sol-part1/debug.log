@@ -1,5 +1,56 @@
 DIM = 6 x 6
 TEMPO = 500
+PAC = levels/1.p
+MON file: levels/1.m
+MON file: levels/3.m
+Line: XXXXXX
+Line: XoooXX
+Line: XoXoXX
+Line: Xooo@X
+Line: XooooX
+Line: XXXXXX
+Pacman Pos = 3 x 1
+Ghost passo: 1
+Ghost Pos = 1 x 3
+Ghost passo: 1
+Ghost Pos = 4 x 3
+Creating threads
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+=== [52941] LEVEL INFO ===
+Dimensions: 6 x 6
+Tempo: 500
+Pacman file: levels/1.p
+Monster files (2):
+  - levels/1.m
+  - levels/3.m
+
+=== BOARD ===
+WWWWWW
+W   WW
+W W WW
+WMM PW
+W    W
+WWWWWW
+==================
+DIM = 6 x 6
+TEMPO = 500
 MON file: levels/1.m
 MON file: levels/3.m
 Line: XXXXXX
@@ -112,23 +163,32 @@ REFRESH
 REFRESH
 REFRESH
 REFRESH
-Killing 0 pacman
-
 REFRESH
 REFRESH
-=== [23482] LEVEL INFO ===
-Dimensions: 6 x 6
-Tempo: 500
-Pacman file: 
-Monster files (2):
-  - levels/1.m
-  - levels/3.m
-
-=== BOARD ===
-WWWWWW
-W   WW
-W W WW
-WMM  W
-W   WW
-WWWWWW
-==================
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
+REFRESH
