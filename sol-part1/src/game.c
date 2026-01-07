@@ -114,6 +114,8 @@ void* ncurses_thread(void *arg) {
 
 static char *build_board_data_for_client(board_t *board){
     size_t cells = (size_t)board->width * (size_t)board->height;
+    if (board->width <= 0 || board->height <= 0) return NULL;
+    if (cells > 1000000) return NULL;  
     char *out = malloc(cells);
     if (!out) return NULL;
 
@@ -208,8 +210,10 @@ static void* sender_thread(void *arg){
 void* host_thread(void *arg){
     host_thread_arg_t *host_arg = (host_thread_arg_t*) arg;
     board_t *board = host_arg->board;
-    char *fifo_registo = host_arg->fifo_registo;
+    char fifo_registo[MAX_PIPE_PATH_LENGTH];  // cópia local
+    strcpy(fifo_registo, host_arg->fifo_registo);
     int max_games = host_arg->max_games;
+    free(arg);
 
     int games_played = 0;
     int running = 1;
@@ -345,12 +349,11 @@ static void* pacman_thread(void *arg) {
                     *p->running = 0;
                 }
                 pthread_rwlock_unlock(&board->state_lock);
-            }
         }
-
-        close(p->req_fd);
-        return NULL;
     }
+
+    return NULL;
+}
 
 void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
@@ -451,11 +454,11 @@ int main(int argc, char** argv) {
 
                 debug("Creating threads\n");
                 
-                host_thread_arg_t host_arg;
-                host_arg.board = &game_board;
-                strcpy(host_arg.fifo_registo, fifo_registo);
-                host_arg.max_games = max_games;
-                pthread_create(&host_tid, NULL, host_thread, (void*) &host_arg);
+                host_thread_arg_t *host_arg = malloc(sizeof(host_thread_arg_t));
+                host_arg->board = &game_board;
+                strcpy(host_arg->fifo_registo, fifo_registo);
+                host_arg->max_games = max_games;
+                pthread_create(&host_tid, NULL, host_thread, host_arg);
 
                 for (int i = 0; i < game_board.n_ghosts; i++) {
                     ghost_thread_arg_t *arg = malloc(sizeof(ghost_thread_arg_t));

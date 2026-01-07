@@ -217,7 +217,7 @@ int main(int argc, char *argv[]) {
     pthread_mutex_destroy(&mutex);
 
     terminal_cleanup();
-    printf('\n');
+    printf("\n");
     fflush(stdout);
 
     return 0;
