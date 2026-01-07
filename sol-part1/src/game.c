@@ -50,6 +50,17 @@ typedef struct {
 } pacman_thread_arg_t;
 
 typedef struct {
+    int client_fd;
+    volatile int *running;
+    volatile int *victory;
+    int req_fd;
+    int notif_fd;
+    char req_pipe[MAX_PIPE_PATH_LENGTH];
+    char notif_pipe[MAX_PIPE_PATH_LENGTH];
+    
+} client_thread_arg_t;
+
+typedef struct {
     int op_code;                           // OP_CODE_CONNECT, OP_CODE_PLAY, etc
     char req_pipe[MAX_PIPE_PATH_LENGTH];   // Path do FIFO de pedidos
     char notif_pipe[MAX_PIPE_PATH_LENGTH]; // Path do FIFO de notificações
@@ -310,6 +321,11 @@ void* host_thread(void *arg){
 
     close(reg_fd);
     return (void*)(intptr_t)last_result;
+}
+
+static void* client_thread(void *arg){
+    client_thread_arg_t *arg = (client_thread_arg_t*) arg;
+     
 }
 
 
