@@ -38,10 +38,9 @@ typedef struct {
 
 typedef struct{
     char fifo_registo[MAX_PIPE_PATH_LENGTH];
+    char levels_dir_path[MAX_LEVEL_DIR_PATH];
     int max_games;
-    char *levels_path;
-
-}host_thread_arg_t;
+} host_thread_arg_t;
 
 typedef struct {
     board_t *board;
@@ -52,13 +51,13 @@ typedef struct {
 
 typedef struct {
     int client_fd;
+    char level_dir_path[MAX_LEVEL_DIR_PATH];
     volatile int *running;
     volatile int *victory;
     int req_fd;
     int notif_fd;
     char req_pipe[MAX_PIPE_PATH_LENGTH];
     char notif_pipe[MAX_PIPE_PATH_LENGTH];
-    
 } client_thread_arg_t;
 
 typedef struct {
@@ -73,6 +72,7 @@ static void* ghost_thread(void *arg);
 static void* host_thread(void *arg);
 static void* ncurses_thread(void *arg);
 static void* sender_thread(void *arg);
+static void* client_thread(void *arg);
 
 int thread_shutdown = 0;
 static int read_full(int fd, void *buff, size_t n);
@@ -81,23 +81,28 @@ static int write_full(int fd, const void *buf, size_t n);
 
 static int write_full(int fd, const void *buf, size_t n){
     size_t off = 0;
-    while(off < n){
+    while (off < n) {
         ssize_t w = write(fd, (const char*)buf + off, n - off);
-        if(w <= 0) return -1;
+        if (w < 0) {
+            if (errno == EINTR) continue;      
+            if (errno == EPIPE) return -1;     
+            return -1;
+        }
+        if (w == 0) return -1;
         off += (size_t)w;
     }
     return 0;
 }
 
-static int read_full(int fd, void *buff, size_t n){
+static int read_full(int fd, void *buf, size_t n){
     size_t off = 0;
-    while(off < n){
-        ssize_t r = read(fd, (char*) buff + off, n - off);
-        if (r == 0) return 0; // EOF
-        if (r < 0){
-            perror("read_full: read");
+    while (off < n) {
+        ssize_t r = read(fd, (char*)buf + off, n - off);
+        if (r < 0) {
+            if (errno == EINTR) continue; 
             return -1;
         }
+        if (r == 0) return 0; // EOF
         off += (size_t)r;
     }
     return 1;
@@ -172,7 +177,13 @@ static void* sender_thread(void *arg){
     sender_args_t *a = (sender_args_t*)arg;
 
     while (*a->running) {
-        sleep_ms(a->board->tempo);
+        int total = a->board->tempo;
+        const int step = 20;
+
+        for (int waited = 0; waited < total; waited += step) {
+            if (!*a->running) return NULL;
+            sleep_ms(step);
+        }
 
         int width, height, tempo, victory, game_over, points;
         char *grid = NULL;
@@ -226,7 +237,7 @@ void* host_thread(void *arg) {
     strcpy(fifo_registo, host_arg->fifo_registo);
     int max_games = host_arg->max_games;
     char levels_path[256];
-    strcpy(levels_path, host_arg->levels_path);
+    strcpy(levels_path, host_arg->levels_dir_path);
     free(arg);
 
     int reg_fd = open(fifo_registo, O_RDWR);
@@ -311,11 +322,11 @@ void* host_thread(void *arg) {
 }
 
 static void* client_thread(void *arg){
-    client_thread_arg_t *arg = (client_thread_arg_t*) arg;
-     
+    client_thread_arg_t *carg = (client_thread_arg_t*) arg;
+    (void) carg;
+    // TODO
+    return NULL;
 }
-
-
 
 static void* pacman_thread(void *arg) {
     pacman_thread_arg_t *p = (pacman_thread_arg_t*)arg;
@@ -458,9 +469,12 @@ int main(int argc, char** argv) {
                 debug("Creating threads\n");
                 
                 host_thread_arg_t *host_arg = malloc(sizeof(host_thread_arg_t));
-                host_arg->board = &game_board;
+
+                strncpy(host_arg->levels_dir_path, argv[1], sizeof(host_arg->levels_dir_path)-1);
+                host_arg->levels_dir_path[sizeof(host_arg->levels_dir_path)-1] = '\0';
                 strcpy(host_arg->fifo_registo, fifo_registo);
                 host_arg->max_games = max_games;
+
                 pthread_create(&host_tid, NULL, host_thread, host_arg);
 
                 for (int i = 0; i < game_board.n_ghosts; i++) {

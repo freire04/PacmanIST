@@ -2,6 +2,7 @@
 #define PROTOCOL_H
 
 #define MAX_PIPE_PATH_LENGTH 40
+#define MAX_LEVEL_DIR_PATH 256
 
 enum {
   OP_CODE_CONNECT = 1,
