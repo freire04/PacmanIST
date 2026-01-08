@@ -414,7 +414,7 @@ int main(int argc, char** argv) {
     open_debug_file("debug.log");
     signal(SIGPIPE, SIG_IGN);
 
-    // Criar host_thread
+    
     host_thread_arg_t *host_arg = malloc(sizeof(host_thread_arg_t));
     if (!host_arg) {
         perror("malloc host_arg");
@@ -437,7 +437,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Esperar pela host_thread (nunca termina)
+    
     pthread_join(host_tid, NULL);
 
     close_debug_file();
