@@ -146,6 +146,7 @@ int main(int argc, char *argv[]) {
 
     char command;
     int ch;
+    bool disconnected;
 
     while (1) {
 
@@ -193,6 +194,9 @@ int main(int argc, char *argv[]) {
             pthread_mutex_lock(&mutex);
             stop_execution = true;
             pthread_mutex_unlock(&mutex);
+
+            disconnected = true;
+            pacman_disconnect();
             break;
         }
 
@@ -210,7 +214,8 @@ int main(int argc, char *argv[]) {
     pthread_mutex_unlock(&mutex);
 
     pthread_join(receiver_thread_id, NULL);
-    pacman_disconnect();
+
+    if(!disconnected) pacman_disconnect();
 
     if (cmd_fp)
         fclose(cmd_fp);

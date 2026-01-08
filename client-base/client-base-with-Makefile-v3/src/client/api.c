@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 struct Session {
   int id;
@@ -24,32 +25,33 @@ Board get_last_board_meta(void){
 
 static struct Session session = {.id = -1, .req_pipe = -1, .notif_pipe = -1};
 
-static int read_full(int fd, void *buff, size_t n){
+static int read_full(int fd, void *buf, size_t n){
     size_t off = 0;
-    while(off < n){
-    	ssize_t r = read(fd, (char*) buff + off, n - off);
-    	if (r == 0) return 0; // EOF
-    	if (r < 0){
-      		perror("read_full: read");
-      		return -1;
-    	}
-    	off += (size_t)r;
+    while (off < n) {
+        ssize_t r = read(fd, (char*)buf + off, n - off);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (r == 0) return 0; // EOF
+        off += (size_t)r;
     }
-	return 1;
+    return 1;
 }
 
-static int write_full(int fd, const void *buff, size_t n){
-	size_t off = 0;
-	while(off < n){
-		ssize_t w = write(fd, (const char*) buff + off, n - off);
-		if(w <= 0){
-			perror("write_full: write");
-			return -1;
-		}
-		off += (size_t) w;
-	}
-
-	return 0;
+static int write_full(int fd, const void *buf, size_t n){
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = write(fd, (const char*)buf + off, n - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EPIPE) return -1;
+            return -1;
+        }
+        if (w == 0) return -1;
+        off += (size_t)w;
+    }
+    return 0;
 }
 
 static void session_reset(void){
