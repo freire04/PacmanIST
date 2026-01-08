@@ -35,10 +35,11 @@ typedef struct {
     volatile int *running;
     volatile int *victory;
 } sender_args_t;
+
 typedef struct{
-    board_t *board;
     char fifo_registo[MAX_PIPE_PATH_LENGTH];
     int max_games;
+    char *levels_path;
 
 }host_thread_arg_t;
 
@@ -218,25 +219,25 @@ static void* sender_thread(void *arg){
     return NULL;
 }
 
-void* host_thread(void *arg){
+void* host_thread(void *arg) {
     host_thread_arg_t *host_arg = (host_thread_arg_t*) arg;
-    board_t *board = host_arg->board;
-    char fifo_registo[MAX_PIPE_PATH_LENGTH];  // cópia local
+    
+    char fifo_registo[MAX_PIPE_PATH_LENGTH];
     strcpy(fifo_registo, host_arg->fifo_registo);
     int max_games = host_arg->max_games;
+    char levels_path[256];
+    strcpy(levels_path, host_arg->levels_path);
     free(arg);
-
-    int games_played = 0;
-    int running = 1;
-    int last_result = QUIT_GAME;
 
     int reg_fd = open(fifo_registo, O_RDWR);
     if (reg_fd < 0) {
         perror("host_thread: open fifo_registo");
-        return (void*)(intptr_t)QUIT_GAME;
+        return NULL;
     }
 
-    while (running) {
+    int games_played = 0;
+
+    while (1) {
         char op = 0;
         char req_pipe[MAX_PIPE_PATH_LENGTH] = {0};
         char notif_pipe[MAX_PIPE_PATH_LENGTH] = {0};
@@ -255,8 +256,9 @@ void* host_thread(void *arg){
         req_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
         notif_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
 
-        if (max_games <= games_played) {
-            continue; // 1.1: podes “rejeitar”; 1.2: aqui tens de bloquear
+        if (max_games > 0 && games_played >= max_games) {
+            debug("host_thread: max games reached\n");
+            continue;
         }
 
         games_played++;
@@ -264,14 +266,6 @@ void* host_thread(void *arg){
         int notif_fd = open(notif_pipe, O_WRONLY);
         if (notif_fd < 0) {
             perror("host_thread: open notif_pipe");
-            games_played--;
-            continue;
-        }
-
-        // ACK connect (op_code=1, result=0)
-        char ack[2] = {OP_CODE_CONNECT, 0};
-        if (write_full(notif_fd, ack, 2) != 0) {
-            close(notif_fd);
             games_played--;
             continue;
         }
@@ -284,43 +278,36 @@ void* host_thread(void *arg){
             continue;
         }
 
-        volatile int running_session = 1;
-        volatile int victory = 0;
+        client_thread_arg_t *client_arg = malloc(sizeof(client_thread_arg_t));
+        if (!client_arg) {
+            perror("host_thread: malloc client_arg");
+            close(req_fd);
+            close(notif_fd);
+            games_played--;
+            continue;
+        }
 
-        pthread_t sender_tid, pacman_tid;
+        client_arg->req_fd = req_fd;
+        client_arg->notif_fd = notif_fd;
+        strncpy(client_arg->level_dir_path, levels_path, sizeof(client_arg->level_dir_path) - 1);
+        client_arg->level_dir_path[sizeof(client_arg->level_dir_path) - 1] = '\0';
 
-        sender_args_t sargs = {
-            .board = board,
-            .notif_fd = notif_fd,
-            .running = &running_session,
-            .victory = &victory
-        };
+        pthread_t client_tid;
+        if (pthread_create(&client_tid, NULL, client_thread, client_arg) != 0) {
+            perror("host_thread: pthread_create client_thread");
+            close(req_fd);
+            close(notif_fd);
+            free(client_arg);
+            games_played--;
+            continue;
+        }
 
-        pacman_thread_arg_t pargs = {
-            .board = board,
-            .req_fd = req_fd,
-            .running = &running_session,
-            .victory = &victory
-        };
-
-        pthread_create(&sender_tid, NULL, sender_thread, &sargs);
-        pthread_create(&pacman_tid, NULL, pacman_thread, &pargs);
-
-        pthread_join(pacman_tid, NULL);
-        running_session = 0;
-        pthread_join(sender_tid, NULL);
-
-        close(notif_fd);
-        close(req_fd);
-
-        last_result = victory ? NEXT_LEVEL : QUIT_GAME;
-
-        games_played--;
-        running = 0; // 1.1: só uma sessão e termina
+        
+        debug("host_thread: client_thread created\n");
     }
 
     close(reg_fd);
-    return (void*)(intptr_t)last_result;
+    return NULL;
 }
 
 static void* client_thread(void *arg){
