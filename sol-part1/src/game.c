@@ -39,8 +39,7 @@ typedef struct {
 typedef struct{
     char fifo_registo[MAX_PIPE_PATH_LENGTH];
     int max_games;
-    char *levels_path;
-
+    char levels_path[256];
 }host_thread_arg_t;
 
 typedef struct {
@@ -311,8 +310,11 @@ void* host_thread(void *arg) {
 }
 
 static void* client_thread(void *arg){
-    client_thread_arg_t *arg = (client_thread_arg_t*) arg;
-     
+    client_thread_arg_t *client_arg = (client_thread_arg_t*) arg;
+    
+    // TODO: implementar gestão de níveis
+    
+    return NULL;
 }
 
 
@@ -394,6 +396,7 @@ int main(int argc, char** argv) {
     // Random seed for any random movements
     srand((unsigned int)time(NULL));
 
+    // Criar FIFO de registo
     if (mkfifo(fifo_registo, 0666) == -1) {
         if (errno == EEXIST) {
             struct stat st;
@@ -413,110 +416,33 @@ int main(int argc, char** argv) {
         }
     }
 
-    DIR* level_dir = opendir(argv[1]);
-        
-    if (level_dir == NULL) {
-        fprintf(stderr, "Failed to open directory: %s\n", argv[1]);
-        return 0;
-    }
-
     open_debug_file("debug.log");
-
-    terminal_init();
-    
-    int accumulated_points = 0;
-    bool end_game = false;
-    board_t game_board;
     signal(SIGPIPE, SIG_IGN);
 
-    struct dirent* entry;
-    while ((entry = readdir(level_dir)) != NULL && !end_game) {
-        if (entry->d_name[0] == '.') continue;
-
-        char *dot = strrchr(entry->d_name, '.');
-        if (!dot) continue;
-
-        if (strcmp(dot, ".lvl") == 0) {
-            load_level(&game_board, entry->d_name, argv[1], accumulated_points);
-            draw_board(&game_board, DRAW_MENU);
-            refresh_screen();
-
-            while(true) {
-                pthread_t ncurses_tid, host_tid;
-                pthread_t *ghost_tids = NULL;
-
-                if (game_board.n_ghosts > 0) {
-                    ghost_tids = malloc((size_t)game_board.n_ghosts * sizeof(*ghost_tids));
-                    if (!ghost_tids) {
-                        perror("malloc ghost_tids");
-                        return -1;
-                    }
-                }
-
-                thread_shutdown = 0;
-
-                debug("Creating threads\n");
-                
-                host_thread_arg_t *host_arg = malloc(sizeof(host_thread_arg_t));
-                host_arg->board = &game_board;
-                strcpy(host_arg->fifo_registo, fifo_registo);
-                host_arg->max_games = max_games;
-                pthread_create(&host_tid, NULL, host_thread, host_arg);
-
-                for (int i = 0; i < game_board.n_ghosts; i++) {
-                    ghost_thread_arg_t *arg = malloc(sizeof(ghost_thread_arg_t));
-                    arg->board = &game_board;
-                    arg->ghost_index = i;
-                    pthread_create(&ghost_tids[i], NULL, ghost_thread, (void*) arg);
-                }
-                pthread_create(&ncurses_tid, NULL, ncurses_thread, (void*) &game_board);
-
-                void *ret = NULL;
-                pthread_join(host_tid, &ret);
-                int result = (int)(intptr_t) ret;
-
-                pthread_rwlock_wrlock(&game_board.state_lock);
-                thread_shutdown = 1;
-                pthread_rwlock_unlock(&game_board.state_lock);
-
-                pthread_join(ncurses_tid, NULL);
-                for (int i = 0; i < game_board.n_ghosts; i++) {
-                    pthread_join(ghost_tids[i], NULL);
-                }
-
-                free(ghost_tids);
-
-                if(result == NEXT_LEVEL) {
-                    screen_refresh(&game_board, DRAW_WIN);
-                    sleep_ms(game_board.tempo);
-                    break;
-                }
-
-                if(result == QUIT_GAME) {
-                    screen_refresh(&game_board, DRAW_GAME_OVER); 
-                    sleep_ms(game_board.tempo);
-                    end_game = true;
-                    break;
-                }
-      
-                screen_refresh(&game_board, DRAW_MENU); 
-
-                accumulated_points = game_board.pacmans[0].points;      
-            }
-            print_board(&game_board);
-            unload_level(&game_board);
-        }
-    }    
-
-    terminal_cleanup();
-
-    close_debug_file();
-
-    if (closedir(level_dir) == -1) {
-        fprintf(stderr, "Failed to close directory\n");
-        return 0;
+    host_thread_arg_t *host_arg = malloc(sizeof(host_thread_arg_t));
+    if (!host_arg) {
+        perror("malloc host_arg");
+        close_debug_file();
+        unlink(fifo_registo);
+        return -1;
     }
 
+    strcpy(host_arg->fifo_registo, fifo_registo);
+    host_arg->max_games = max_games;
+    strcpy(host_arg->levels_path, argv[1]);
+
+    pthread_t host_tid;
+    if (pthread_create(&host_tid, NULL, host_thread, host_arg) != 0) {
+        perror("pthread_create host_thread");
+        free(host_arg);
+        close_debug_file();
+        unlink(fifo_registo);
+        return -1;
+    }
+
+    pthread_join(host_tid, NULL);
+
+    close_debug_file();
     unlink(fifo_registo);
     return 0;
 }
