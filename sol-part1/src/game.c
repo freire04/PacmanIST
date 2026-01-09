@@ -67,7 +67,6 @@ typedef struct {
 static void* pacman_thread(void *arg);
 static void* ghost_thread(void *arg);
 static void* host_thread(void *arg);
-static void* ncurses_thread(void *arg);
 static void* sender_thread(void *arg);
 static void* client_thread(void *arg);
 
@@ -307,56 +306,102 @@ void* host_thread(void *arg) {
 static void* client_thread(void *arg){
     client_thread_arg_t *carg = (client_thread_arg_t*) arg;
 
-    char buf[256];
+    int req_fd = carg->req_fd;
+    int notif_fd = carg->notif_fd;
+    char level_dir_path[256];
+    strncpy(level_dir_path, carg->level_dir_path, sizeof(level_dir_path) - 1);
+    level_dir_path[sizeof(level_dir_path) - 1] = '\0';
+    free(carg);
 
-    while(*(carg->running)){
-        ssize_t n = read(carg->fd_in, buf, sizeof(buf) - 1);
-        int op;
-        int client_id;
-        char move;
+    char ack[2] = {OP_CODE_CONNECT, 0};
+    if (write_full(notif_fd, ack, 2) != 0){
+        close(req_fd);
+        close(notif_fd);
+        return NULL;
+    }
 
-        if(n == 0)break; // client fechou ligacao
-        if(n < 0){
-            if(errno == EINTR) continue; // houve um erro
+    DIR* level_dir = opendir(level_dir_path);
+    if (!level_dir) {
+        fprintf(stderr, "client_thread: opendir failed for %s\n", level_dir_path);
+        close(req_fd);
+        close(notif_fd);
+        return NULL;
+    }
+
+    int accumulated_points = 0;
+
+    struct dirent* entry;
+    while ((entry = readdir(level_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+
+        char *dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".lvl") != 0) continue;
+
+        
+        board_t game_board;
+        load_level(&game_board, entry->d_name, level_dir_path, accumulated_points);
+
+        volatile int running = 1;
+        volatile int victory = 0;
+
+       
+        pthread_t sender_tid, pacman_tid;
+        pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
+        if (!ghost_tids) {
+            unload_level(&game_board);
             break;
         }
 
-        if(op == OP_CODE_DISCONNECT){
-            break;
+       
+        sender_args_t sender_arg = {
+            .board = &game_board,
+            .notif_fd = notif_fd,
+            .running = &running,
+            .victory = &victory
+        };
+
+        pacman_thread_arg_t pacman_arg = {
+            .board = &game_board,
+            .req_fd = req_fd,
+            .running = &running,
+            .victory = &victory
+        };
+
+        pthread_create(&sender_tid, NULL, sender_thread, &sender_arg);
+        pthread_create(&pacman_tid, NULL, pacman_thread, &pacman_arg);
+        
+        for (int i = 0; i < game_board.n_ghosts; i++) {
+            ghost_thread_arg_t *ghost_arg = malloc(sizeof(ghost_thread_arg_t));
+            ghost_arg->board = &game_board;
+            ghost_arg->ghost_index = i;
+            pthread_create(&ghost_tids[i], NULL, ghost_thread, ghost_arg);
         }
 
+        pthread_join(pacman_tid, NULL);
 
-        if (op == OP_CODE_PLAY) {
-            // Atualizar estado do jogo (WRITE lock)
-            pthread_rwlock_wrlock(&carg->board->state_lock);
+        running = 0;
 
-            // TODO: aqui tens de ligar ao teu código de movimento.
-            // Exemplo típico: aplicar msg.move ao pacman do jogador (ou pacman[0] se só houver 1).
-            //
-            // apply_move(carg->board, carg->client_id, msg.move);
-            //
-            // Se ainda não tens função, diz-me onde mexes no pacman (pos_x/pos_y)
-            // e eu escrevo-te já a apply_move.
-
-            pthread_rwlock_unlock(&carg->board->state_lock);
-
-            // opcional: notificar / responder pelo fd_out
-            // (depende do enunciado se há ACK ou envio do board)
+        pthread_join(sender_tid, NULL);
+        for (int i = 0; i < game_board.n_ghosts; i++) {
+            pthread_join(ghost_tids[i], NULL);
         }
 
-        if (msg.op == OP_CODE_BOARD) {
-            // opcional: enviar estado do board ao cliente via fd_out
-            // (se o enunciado pedir)
+        free(ghost_tids);
+
+        if (victory) {
+            accumulated_points = game_board.pacmans[0].points;
+            unload_level(&game_board);
+            continue; 
+        } else {
+            
+            unload_level(&game_board);
+            break; 
         }
     }
 
-    // Aqui decides quem fecha fds e quem dá free(arg).
-    // Regra simples:
-    // - se a thread "é dona" dos fds e do arg: fecha e free aqui.
-    // close(carg->fd_in);
-    // close(carg->fd_out);
-    // free(carg);
-
+    closedir(level_dir);
+    close(req_fd);
+    close(notif_fd);
     return NULL;
 }
 
