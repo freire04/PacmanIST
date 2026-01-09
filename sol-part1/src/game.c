@@ -50,15 +50,12 @@ typedef struct {
 } pacman_thread_arg_t;
 
 typedef struct {
-    int client_fd;
-    char level_dir_path[MAX_LEVEL_DIR_PATH];
-    volatile int *running;
-    volatile int *victory;
     int req_fd;
     int notif_fd;
-    char req_pipe[MAX_PIPE_PATH_LENGTH];
-    char notif_pipe[MAX_PIPE_PATH_LENGTH];
+    char level_dir_path[256];
+    volatile sig_atomic_t *running;
 } client_thread_arg_t;
+
 
 typedef struct {
     int op_code;                           // OP_CODE_CONNECT, OP_CODE_PLAY, etc
@@ -323,8 +320,57 @@ void* host_thread(void *arg) {
 
 static void* client_thread(void *arg){
     client_thread_arg_t *carg = (client_thread_arg_t*) arg;
-    (void) carg;
-    // TODO
+
+    char buf[256];
+
+    while(*(carg->running)){
+        ssize_t n = read(carg->fd_in, buf, sizeof(buf) - 1);
+        int op;
+        int client_id;
+        char move;
+
+        if(n == 0)break; // client fechou ligacao
+        if(n < 0){
+            if(errno == EINTR) continue; // houve um erro
+            break;
+        }
+
+        if(op == OP_CODE_DISCONNECT){
+            break;
+        }
+
+
+        if (op == OP_CODE_PLAY) {
+            // Atualizar estado do jogo (WRITE lock)
+            pthread_rwlock_wrlock(&carg->board->state_lock);
+
+            // TODO: aqui tens de ligar ao teu código de movimento.
+            // Exemplo típico: aplicar msg.move ao pacman do jogador (ou pacman[0] se só houver 1).
+            //
+            // apply_move(carg->board, carg->client_id, msg.move);
+            //
+            // Se ainda não tens função, diz-me onde mexes no pacman (pos_x/pos_y)
+            // e eu escrevo-te já a apply_move.
+
+            pthread_rwlock_unlock(&carg->board->state_lock);
+
+            // opcional: notificar / responder pelo fd_out
+            // (depende do enunciado se há ACK ou envio do board)
+        }
+
+        if (msg.op == OP_CODE_BOARD) {
+            // opcional: enviar estado do board ao cliente via fd_out
+            // (se o enunciado pedir)
+        }
+    }
+
+    // Aqui decides quem fecha fds e quem dá free(arg).
+    // Regra simples:
+    // - se a thread "é dona" dos fds e do arg: fecha e free aqui.
+    // close(carg->fd_in);
+    // close(carg->fd_out);
+    // free(carg);
+
     return NULL;
 }
 
