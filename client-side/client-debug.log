@@ -1,9 +1,2 @@
-Command: S
-Command: S
-Command: S
-Command: S
-Command: S
-Command: A
-Command: A
 receive_board_updates: falha ao ler op_code
 Returning receiver thread...
