@@ -27,11 +27,7 @@
 typedef struct {
     board_t *board;
     int ghost_index;
-<<<<<<< HEAD
     volatile int *running;   
-=======
-    volatile int *running;
->>>>>>> refs/remotes/origin/main
 } ghost_thread_arg_t;
 
 typedef struct {
@@ -59,7 +55,6 @@ typedef struct {
     int notif_fd;
     char level_dir_path[256];
 } client_thread_arg_t;
-
 
 typedef struct {
     int op_code;                           // OP_CODE_CONNECT, OP_CODE_PLAY, etc
