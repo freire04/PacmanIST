@@ -15,7 +15,7 @@ Potential Structures for ncurses
 */
 
 /*Initialize everything ncurses requires*/
-int terminal_init();
+int terminal_init(void);
 
 /*Draw the board on the screen*/
 void draw_board(board_t* board, int mode);
@@ -33,13 +33,13 @@ Pre loaded colours:
 void draw(char c, int colour_i, int pos_x, int pos_y);
 
 /*Call ncurses refresh() to update the screen*/
-void refresh_screen();
+void refresh_screen(void);
 
 /*Ncurses will be reading the player's inputs*/
-char get_input();
+char get_input(void);
 
 char* get_board_displayed(board_t* board);
 
-void terminal_cleanup();
+void terminal_cleanup(void);
 
 #endif

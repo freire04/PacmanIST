@@ -89,9 +89,9 @@ void unload_level(board_t * board);
 
 // DEBUG FILE
 
-void open_debug_file(char *filename);
+void open_debug_file(const char *filename);
 
-void close_debug_file();
+void close_debug_file(void);
 
 void debug(const char * format, ...);
 

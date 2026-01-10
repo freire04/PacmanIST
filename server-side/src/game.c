@@ -136,13 +136,6 @@ static int read_full(int fd, void *buf, size_t n){
     return 1;
 }
 
-// O nome esclarece-se por si proprio
-void screen_refresh(board_t * game_board, int mode) {
-    debug("REFRESH\n");
-    draw_board(game_board, mode);
-    refresh_screen();
-}
-
 /*
  *  build_board_data_for_client:
  *  converte o board interno para um “grid linear” (width*height)

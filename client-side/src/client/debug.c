@@ -4,13 +4,15 @@
 #include <stdarg.h>
 #include <time.h>
 
+#include "debug.h"
+
 FILE * debugfile;
 
-void open_debug_file(char *filename) {
+void open_debug_file(const char *filename) {
     debugfile = fopen(filename, "w");
 }
 
-void close_debug_file() {
+void close_debug_file(void) {
     fclose(debugfile);
 }
 

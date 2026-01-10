@@ -5,7 +5,14 @@ CFLAGS = -g -std=c17 -D_POSIX_C_SOURCE=200809L -I. \
 		 -Wcast-align -Wfloat-equal -Wformat=2 \
 		 -Wnull-dereference -Wshadow -Wswitch-enum -Wundef -Wunreachable-code -Wunused 
 #CFLAGS += -pthread
-#CFLAGS += -fsanitize=address -fsanitize=undefined 
+CFLAGS += -fsanitize=address -fsanitize=undefined 
+CFLAGS += -Wpedantic -Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition
+CFLAGS += -Wpointer-arith -Wwrite-strings -Wvla
+CFLAGS += -Wdouble-promotion -Wformat-truncation=2 -Wformat-overflow=2
+CFLAGS += -Wduplicated-cond -Wduplicated-branches -Wlogical-op
+CFLAGS += -Walloca -Walloc-zero -Wfree-nonheap-object
+CFLAGS += -Wstringop-overflow=4 -Wstringop-truncation
+
 LDFLAGS = -lncurses
 
 # Directory variables

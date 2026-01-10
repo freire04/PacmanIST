@@ -5,8 +5,7 @@
 #include <ctype.h>
 
 
-int terminal_init() {
-    // Initialize ncurses mode
+int terminal_init(void){
     initscr();
 
     // Disable line buffering - get characters immediately
@@ -289,12 +288,12 @@ void draw(char c, int colour_i, int pos_x, int pos_y) {
     attroff(COLOR_PAIR(colour_i) | A_BOLD);
 }
 
-void refresh_screen() {
+void refresh_screen(void) {
     // Update the physical screen with the virtual screen
     refresh();
 }
 
-char get_input() {
+char get_input(void) {
     // Get a character from the keyboard
     int ch = getch();
 
@@ -320,7 +319,7 @@ char get_input() {
     }
 }
 
-void terminal_cleanup() {
+void terminal_cleanup(void) {
     // Restore terminal settings and clean up ncurses
     endwin();
 }

@@ -183,7 +183,7 @@ int move_pacman(board_t* board, int pacman_index, command_t* command) {
     return DEAD_PACMAN;
 }
 
-int move_ghost_charged(board_t* board, int ghost_index, char direction) {
+static int move_ghost_charged(board_t* board, int ghost_index, char direction) {
     ghost_t* ghost = &board->ghosts[ghost_index];
     int x = ghost->pos_x;
     int y = ghost->pos_y;
@@ -511,11 +511,11 @@ void unload_level(board_t * board) {
     free(board->ghosts);
 }
 
-void open_debug_file(char *filename) {
+void open_debug_file(const char *filename) {
     debugfile = fopen(filename, "w");
 }
 
-void close_debug_file() {
+void close_debug_file(void) {
     fclose(debugfile);
 }
 
