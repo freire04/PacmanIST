@@ -27,6 +27,7 @@
 typedef struct {
     board_t *board;
     int ghost_index;
+    volatile int *running;
 } ghost_thread_arg_t;
 
 typedef struct {
@@ -98,7 +99,7 @@ static int read_full(int fd, void *buf, size_t n){
             if (errno == EINTR) continue; 
             return -1;
         }
-        if (r == 0) return 0; // EOF
+        if (r == 0) return 0; 
         off += (size_t)r;
     }
     return 1;
@@ -124,7 +125,7 @@ static char *build_board_data_for_client(board_t *board){
             int idx = y * board->width + x;
             char c = board->board[idx].content;
 
-            // detectar se há fantasma carregado nesta célula
+            
             int ghost_charged = 0;
             if (c == 'M') {
                 for (int g = 0; g < board->n_ghosts; g++) {
@@ -146,7 +147,7 @@ static char *build_board_data_for_client(board_t *board){
                     else out[pos++] = ' ';
                     break;
                 default:
-                    out[pos++] = ' '; // fallback seguro
+                    out[pos++] = ' '; 
                     break;
             }
         }
@@ -178,7 +179,7 @@ static void* sender_thread(void *arg){
         game_over = (a->board->pacmans[0].alive == 0);
         victory   = (*a->victory);
 
-        grid = build_board_data_for_client(a->board); // malloc
+        grid = build_board_data_for_client(a->board); 
         pthread_rwlock_unlock(&a->board->state_lock);
 
         if (!grid) {
@@ -374,6 +375,7 @@ static void* client_thread(void *arg){
             ghost_thread_arg_t *ghost_arg = malloc(sizeof(ghost_thread_arg_t));
             ghost_arg->board = &game_board;
             ghost_arg->ghost_index = i;
+            ghost_arg->running = &running;
             pthread_create(&ghost_tids[i], NULL, ghost_thread, ghost_arg);
         }
 
@@ -412,7 +414,7 @@ static void* pacman_thread(void *arg) {
     while (*p->running) {
         char op_code = 0;
         int rr = read_full(p->req_fd, &op_code, 1);
-        if (rr <= 0) { // cliente morreu/fechou
+        if (rr <= 0) { 
             *p->running = 0;
             break;
         }
@@ -450,18 +452,19 @@ void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
     board_t *board = ghost_arg->board;
     int ghost_ind = ghost_arg->ghost_index;
+    volatile int *running = ghost_arg->running;
 
     free(ghost_arg);
 
     ghost_t* ghost = &board->ghosts[ghost_ind];
 
-    while (true) {
+    while (*running) {
         sleep_ms(board->tempo * (1 + ghost->passo));
 
         pthread_rwlock_wrlock(&board->state_lock);
-        if (thread_shutdown) {
+        if (!*running) {
             pthread_rwlock_unlock(&board->state_lock);
-            pthread_exit(NULL);
+            break;
         }
         
         move_ghost(board, ghost_ind, &ghost->moves[ghost->current_move%ghost->n_moves]);
@@ -482,14 +485,13 @@ int main(int argc, char** argv) {
     // Random seed for any random movements
     srand((unsigned int)time(NULL));
 
-    // Criar FIFO de registo
+
     if (mkfifo(fifo_registo, 0666) == -1) {
         if (errno == EEXIST) {
             struct stat st;
             if (stat(fifo_registo, &st) == 0 && S_ISFIFO(st.st_mode)) {
-                // já existe e é FIFO -> ok, reutiliza
+                
             } else {
-                // existe mas não é FIFO -> remove e cria
                 unlink(fifo_registo);
                 if (mkfifo(fifo_registo, 0666) == -1) {
                     perror("Erro ao criar o FIFO");
