@@ -263,10 +263,11 @@ int read_ghosts(board_t* board) {
                 char *arg1 = strtok(NULL, " \t\n");
                 char *arg2 = strtok(NULL, " \t\n");
                 if (arg1 && arg2) {
-                    ghost->pos_x = atoi(arg1);
-                    ghost->pos_y = atoi(arg2);
+                    ghost->pos_y = atoi(arg1);
+                    ghost->pos_x = atoi(arg2);
                     int idx = ghost->pos_y * board->width + ghost->pos_x;
                     board->board[idx].content = 'M';
+                    debug("Ghost %d POS lida: x=%d y=%d\n", i, ghost->pos_x, ghost->pos_y);
                     debug("Ghost Pos = %d x %d\n", ghost->pos_x, ghost->pos_y);
                 }
             }

@@ -1,2 +1,9 @@
-Client pressed 'Q', quitting game
+Command: S
+Command: S
+Command: S
+Command: S
+Command: S
+Command: S
+Command: S
+receive_board_updates: failed to read op_code
 Returning receiver thread...

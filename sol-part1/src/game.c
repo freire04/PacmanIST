@@ -27,6 +27,7 @@
 typedef struct {
     board_t *board;
     int ghost_index;
+    volatile int *running;   
 } ghost_thread_arg_t;
 
 typedef struct {
@@ -53,7 +54,6 @@ typedef struct {
     int req_fd;
     int notif_fd;
     char level_dir_path[256];
-    volatile sig_atomic_t *running;
 } client_thread_arg_t;
 
 
@@ -73,6 +73,23 @@ static void* client_thread(void *arg);
 int thread_shutdown = 0;
 static int read_full(int fd, void *buff, size_t n);
 static int write_full(int fd, const void *buf, size_t n);
+
+#include <stdio.h>
+
+// fiz isto so para nao ficar vazio quando inicio o servidor
+static void print_server_banner(const char *fifo, int max_games, const char *levels_dir) {
+    printf("\n");
+    printf("////////////////////////////////////////\n");
+    printf("//                                    //\n");
+    printf("//            SERVER STARTED           //\n");
+    printf("//                                    //\n");
+    printf("////////////////////////////////////////\n");
+    printf("Levels:    %s\n", levels_dir);
+    printf("Max games: %d%s\n", max_games, (max_games == 0 ? " (unlimited)" : ""));
+    printf("FIFO:      %s\n\n", fifo);
+    fflush(stdout);
+}
+
 
 
 static int write_full(int fd, const void *buf, size_t n){
@@ -250,20 +267,26 @@ void* host_thread(void *arg) {
         notif_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
 
         if (max_games > 0 && games_played >= max_games) {
-            debug("host_thread: max games reached\n");
+            int notif_fd = open(notif_pipe, O_RDWR);     
+            if (notif_fd >= 0) {
+                char ack[2] = { OP_CODE_CONNECT, 1 };  
+                write_full(notif_fd, ack, 2);
+                close(notif_fd);
+            }
             continue;
         }
 
+
         games_played++;
 
-        int notif_fd = open(notif_pipe, O_WRONLY);
+        int notif_fd = open(notif_pipe, O_RDWR);
         if (notif_fd < 0) {
             perror("host_thread: open notif_pipe");
             games_played--;
             continue;
         }
 
-        int req_fd = open(req_pipe, O_RDONLY);
+        int req_fd = open(req_pipe, O_RDWR);
         if (req_fd < 0) {
             perror("host_thread: open req_pipe");
             close(notif_fd);
@@ -352,28 +375,43 @@ static void* client_thread(void *arg){
             break;
         }
 
-       
-        sender_args_t sender_arg = {
+        sender_args_t *sender_arg = malloc(sizeof(*sender_arg));
+        pacman_thread_arg_t *pacman_arg = malloc(sizeof(*pacman_arg));
+        if (!sender_arg || !pacman_arg) {
+            free(sender_arg);
+            free(pacman_arg);
+            unload_level(&game_board);
+            free(ghost_tids);
+            break;
+        }
+
+        *sender_arg = (sender_args_t){
             .board = &game_board,
             .notif_fd = notif_fd,
             .running = &running,
             .victory = &victory
         };
 
-        pacman_thread_arg_t pacman_arg = {
+        *pacman_arg = (pacman_thread_arg_t){
             .board = &game_board,
             .req_fd = req_fd,
             .running = &running,
             .victory = &victory
         };
 
-        pthread_create(&sender_tid, NULL, sender_thread, &sender_arg);
-        pthread_create(&pacman_tid, NULL, pacman_thread, &pacman_arg);
+        pthread_create(&sender_tid, NULL, sender_thread, sender_arg);
+        pthread_create(&pacman_tid, NULL, pacman_thread, pacman_arg);
+
         
         for (int i = 0; i < game_board.n_ghosts; i++) {
             ghost_thread_arg_t *ghost_arg = malloc(sizeof(ghost_thread_arg_t));
+            if (!ghost_arg){
+                running = 0;
+                break;
+            }
             ghost_arg->board = &game_board;
             ghost_arg->ghost_index = i;
+            ghost_arg->running = &running;
             pthread_create(&ghost_tids[i], NULL, ghost_thread, ghost_arg);
         }
 
@@ -387,6 +425,9 @@ static void* client_thread(void *arg){
         }
 
         free(ghost_tids);
+        free(sender_arg);
+        free(pacman_arg);
+
 
         if (victory) {
             accumulated_points = game_board.pacmans[0].points;
@@ -450,19 +491,21 @@ void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
     board_t *board = ghost_arg->board;
     int ghost_ind = ghost_arg->ghost_index;
+    volatile int *running = ghost_arg->running;
 
     free(ghost_arg);
 
     ghost_t* ghost = &board->ghosts[ghost_ind];
 
-    while (true) {
+    while (*running) {
         sleep_ms(board->tempo * (1 + ghost->passo));
 
         pthread_rwlock_wrlock(&board->state_lock);
-        if (thread_shutdown) {
+        if (!*running) {
             pthread_rwlock_unlock(&board->state_lock);
-            pthread_exit(NULL);
+            break;
         }
+
         
         move_ghost(board, ghost_ind, &ghost->moves[ghost->current_move%ghost->n_moves]);
         pthread_rwlock_unlock(&board->state_lock);
@@ -478,6 +521,8 @@ int main(int argc, char** argv) {
 
     int max_games = atoi(argv[2]);
     char *fifo_registo = argv[3];
+
+    print_server_banner(argv[1], max_games, fifo_registo);
 
     // Random seed for any random movements
     srand((unsigned int)time(NULL));
