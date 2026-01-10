@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 host_thread: client_thread created
 DIM = 6 x 6
 TEMPO = 500
@@ -202,3 +203,5 @@ Ghost Pos = 2 x 3
 Ghost passo: 1
 Ghost 1 POS lida: x=2 y=4
 Ghost Pos = 2 x 4
+=======
+>>>>>>> refs/remotes/origin/main
