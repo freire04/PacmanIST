@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <signal.h>
 #include <errno.h>
+#include <semaphore.h>
 
 #include "board.h"
 #include "display.h"
@@ -56,24 +57,18 @@ typedef struct {
     char level_dir_path[256];
 } client_thread_arg_t;
 
-typedef struct {
-    int op_code;                           // OP_CODE_CONNECT, OP_CODE_PLAY, etc
-    char req_pipe[MAX_PIPE_PATH_LENGTH];   // Path do FIFO de pedidos
-    char notif_pipe[MAX_PIPE_PATH_LENGTH]; // Path do FIFO de notificações
-    char command;                          // Para OP_CODE_PLAY
-} message_t;
-
 static void* pacman_thread(void *arg);
 static void* ghost_thread(void *arg);
 static void* host_thread(void *arg);
 static void* sender_thread(void *arg);
 static void* client_thread(void *arg);
 
-int thread_shutdown = 0;
+// Helpers
 static int read_full(int fd, void *buff, size_t n);
 static int write_full(int fd, const void *buf, size_t n);
 
-#include <stdio.h>
+static sem_t sem_slots;
+static int sem_enabled = 0;   // 1 se max_games>0
 
 // fiz isto so para nao ficar vazio quando inicio o servidor
 static void print_server_banner(const char *fifo, int max_games, const char *levels_dir) {
@@ -230,21 +225,23 @@ static void* sender_thread(void *arg){
 
 void* host_thread(void *arg) {
     host_thread_arg_t *host_arg = (host_thread_arg_t*) arg;
-    
+
     char fifo_registo[MAX_PIPE_PATH_LENGTH];
-    strcpy(fifo_registo, host_arg->fifo_registo);
-    int max_games = host_arg->max_games;
     char levels_path[256];
-    strcpy(levels_path, host_arg->levels_dir_path);
-    free(arg);
+
+    strncpy(fifo_registo, host_arg->fifo_registo, sizeof(fifo_registo) - 1);
+    fifo_registo[sizeof(fifo_registo) - 1] = '\0';
+
+    strncpy(levels_path, host_arg->levels_dir_path, sizeof(levels_path) - 1);
+    levels_path[sizeof(levels_path) - 1] = '\0';
+
+    free(host_arg);
 
     int reg_fd = open(fifo_registo, O_RDWR);
     if (reg_fd < 0) {
         perror("host_thread: open fifo_registo");
         return NULL;
     }
-
-    int games_played = 0;
 
     while (1) {
         char op = 0;
@@ -255,7 +252,7 @@ void* host_thread(void *arg) {
         if (rr <= 0) continue;
 
         if (op != OP_CODE_CONNECT) {
-            debug("host_thread: invalid op_code %d\n", (int) op);
+            debug("host_thread: invalid op_code %d\n", (int)op);
             continue;
         }
 
@@ -265,59 +262,66 @@ void* host_thread(void *arg) {
         req_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
         notif_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
 
-        if (max_games > 0 && games_played >= max_games) {
-            int notif_fd = open(notif_pipe, O_RDWR);     
-            if (notif_fd >= 0) {
-                char ack[2] = { OP_CODE_CONNECT, 1 };  
-                write_full(notif_fd, ack, 2);
-                close(notif_fd);
+        // bloquear até haver slot livre (se sem_enabled)
+        if (sem_enabled) {
+            while (sem_wait(&sem_slots) == -1) {
+                if (errno == EINTR) continue;
+                perror("host_thread: sem_wait");
+                close(reg_fd);
+                return NULL;
             }
-            continue;
         }
 
-
-        games_played++;
-
-        int notif_fd = open(notif_pipe, O_RDWR);
+        int notif_fd = open(notif_pipe, O_WRONLY);
         if (notif_fd < 0) {
             perror("host_thread: open notif_pipe");
-            games_played--;
+            if (sem_enabled) sem_post(&sem_slots);
             continue;
         }
 
-        int req_fd = open(req_pipe, O_RDWR);
+        // ACK connect
+        char ack[2] = { OP_CODE_CONNECT, 0 };
+        if (write_full(notif_fd, ack, 2) != 0) {
+            perror("host_thread: write ack");
+            close(notif_fd);
+            if (sem_enabled) sem_post(&sem_slots);
+            continue;
+        }
+
+        int req_fd = open(req_pipe, O_RDONLY);
         if (req_fd < 0) {
             perror("host_thread: open req_pipe");
             close(notif_fd);
-            games_played--;
+            if (sem_enabled) sem_post(&sem_slots);
             continue;
         }
 
-        client_thread_arg_t *client_arg = malloc(sizeof(client_thread_arg_t));
+        client_thread_arg_t *client_arg = malloc(sizeof(*client_arg));
         if (!client_arg) {
             perror("host_thread: malloc client_arg");
             close(req_fd);
             close(notif_fd);
-            games_played--;
+            if (sem_enabled) sem_post(&sem_slots);
             continue;
         }
 
         client_arg->req_fd = req_fd;
         client_arg->notif_fd = notif_fd;
-        strncpy(client_arg->level_dir_path, levels_path, sizeof(client_arg->level_dir_path) - 1);
+        strncpy(client_arg->level_dir_path, levels_path,
+                sizeof(client_arg->level_dir_path) - 1);
         client_arg->level_dir_path[sizeof(client_arg->level_dir_path) - 1] = '\0';
 
         pthread_t client_tid;
         if (pthread_create(&client_tid, NULL, client_thread, client_arg) != 0) {
             perror("host_thread: pthread_create client_thread");
+            free(client_arg);
             close(req_fd);
             close(notif_fd);
-            free(client_arg);
-            games_played--;
+            if (sem_enabled) sem_post(&sem_slots);
             continue;
         }
 
-        
+        pthread_detach(client_tid);
         debug("host_thread: client_thread created\n");
     }
 
@@ -335,18 +339,12 @@ static void* client_thread(void *arg){
     level_dir_path[sizeof(level_dir_path) - 1] = '\0';
     free(carg);
 
-    char ack[2] = {OP_CODE_CONNECT, 0};
-    if (write_full(notif_fd, ack, 2) != 0){
-        close(req_fd);
-        close(notif_fd);
-        return NULL;
-    }
-
     DIR* level_dir = opendir(level_dir_path);
     if (!level_dir) {
         fprintf(stderr, "client_thread: opendir failed for %s\n", level_dir_path);
         close(req_fd);
         close(notif_fd);
+        if (sem_enabled) sem_post(&sem_slots);
         return NULL;
     }
 
@@ -368,10 +366,13 @@ static void* client_thread(void *arg){
 
        
         pthread_t sender_tid, pacman_tid;
-        pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
-        if (!ghost_tids) {
-            unload_level(&game_board);
-            break;
+        pthread_t *ghost_tids = NULL;
+        if (game_board.n_ghosts > 0) {
+            ghost_tids = malloc((size_t)game_board.n_ghosts * sizeof(*ghost_tids));
+            if (!ghost_tids) {
+                unload_level(&game_board);
+                break;
+            }
         }
 
         sender_args_t *sender_arg = malloc(sizeof(*sender_arg));
@@ -400,7 +401,6 @@ static void* client_thread(void *arg){
 
         pthread_create(&sender_tid, NULL, sender_thread, sender_arg);
         pthread_create(&pacman_tid, NULL, pacman_thread, pacman_arg);
-
         
         for (int i = 0; i < game_board.n_ghosts; i++) {
             ghost_thread_arg_t *ghost_arg = malloc(sizeof(ghost_thread_arg_t));
@@ -442,6 +442,7 @@ static void* client_thread(void *arg){
     closedir(level_dir);
     close(req_fd);
     close(notif_fd);
+    if (sem_enabled) sem_post(&sem_slots);
     return NULL;
 }
 
@@ -562,6 +563,11 @@ int main(int argc, char** argv) {
     strcpy(host_arg->fifo_registo, fifo_registo);
     host_arg->max_games = max_games;
 
+    if (max_games > 0) {
+        sem_init(&sem_slots, 0, max_games);
+        sem_enabled = 1;
+    }
+
     pthread_t host_tid;
     if (pthread_create(&host_tid, NULL, host_thread, host_arg) != 0) {
         perror("pthread_create host_thread");
@@ -573,6 +579,8 @@ int main(int argc, char** argv) {
 
     
     pthread_join(host_tid, NULL);
+
+    if(max_games > 0) sem_destroy(&sem_slots);
 
     close_debug_file();
     unlink(fifo_registo);

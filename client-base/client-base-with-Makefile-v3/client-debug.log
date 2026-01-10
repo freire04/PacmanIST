@@ -1,5 +1,12 @@
 Command: S
 Command: A
+Command: D
+Command: S
 Command: A
 Command: S
+Command: D
+Command: S
+Command: S
+Command: S
+receive_board_updates: failed to read op_code
 Returning receiver thread...
