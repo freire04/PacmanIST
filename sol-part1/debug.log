@@ -72,3 +72,40 @@ Ghost Pos = 2 x 3
 Ghost passo: 1
 Ghost 1 POS lida: x=2 y=4
 Ghost Pos = 2 x 4
+host_thread: client_thread created
+DIM = 6 x 6
+TEMPO = 500
+PAC = levels/1.p
+MON file: levels/1.m
+MON file: levels/3.m
+Line: XXXXXX
+Line: XooooX
+Line: XooooX
+Line: XooooX
+Line: Xooo@X
+Line: XXXXXX
+Pacman Pos = 4 x 1
+Ghost passo: 1
+Ghost 0 POS lida: x=2 y=3
+Ghost Pos = 2 x 3
+Ghost passo: 1
+Ghost 1 POS lida: x=2 y=4
+Ghost Pos = 2 x 4
+DIM = 6 x 6
+TEMPO = 500
+PAC = levels/1.p
+MON file: levels/1.m
+MON file: levels/3.m
+Line: XXXXXX
+Line: XooooX
+Line: XooooX
+Line: XooooX
+Line: Xooo@X
+Line: XXXXXX
+Pacman Pos = 4 x 1
+Ghost passo: 1
+Ghost 0 POS lida: x=2 y=3
+Ghost Pos = 2 x 3
+Ghost passo: 1
+Ghost 1 POS lida: x=2 y=4
+Ghost Pos = 2 x 4
